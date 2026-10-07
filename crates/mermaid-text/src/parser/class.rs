@@ -54,7 +54,9 @@ use crate::Error;
 use crate::class::{
     Attribute, ClassDiagram, Member, Method, RelKind, Relation, Stereotype, Visibility,
 };
-use crate::parser::common::strip_inline_comment;
+use crate::parser::common::{
+    strip_inline_comment, strip_keyword_prefix as strip_keyword_prefix_ci,
+};
 
 /// Parse a `classDiagram` source string into a [`ClassDiagram`].
 ///
@@ -608,24 +610,6 @@ fn strip_inline_multiplicity(tok: &str) -> (Option<String>, &str, Option<String>
         None
     };
     (from_mult, s.trim(), to_mult)
-}
-
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
-/// Strip a case-insensitive keyword prefix followed by whitespace. Returns the
-/// trimmed remainder on match, `None` otherwise.
-fn strip_keyword_prefix_ci<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
-    let len = kw.len();
-    if line.len() > len
-        && line[..len].eq_ignore_ascii_case(kw)
-        && line.as_bytes()[len].is_ascii_whitespace()
-    {
-        Some(line[len..].trim())
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------
