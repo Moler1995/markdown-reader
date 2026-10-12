@@ -15,7 +15,13 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   `direction`, `note`, `link`, `click`, `namespace`) landed inside a
   multi-byte char. The copy is removed and the parser now uses the canonical
   `parser::common::strip_keyword_prefix`. Pinned by two regression tests in
-  `tests/utf8_multibyte.rs`.
+  `tests/utf8_multibyte.rs`. Original fix and reproductions by @worldnine
+  in #51; maintainer review also pins parsed relationship structure and the
+  exact unsupported-shorthand diagnostic.
+- Class methods and ER relationships accept multi-byte Unicode whitespace
+  without slicing inside a character. Malformed class-method parentheses return
+  a descriptive parse error instead of constructing a reversed slice. These
+  pre-existing variants were discovered and reproduced during the #51 review.
 
 ## 0.57.2 — 2026-08-31 — Delimiter-aware flowchart labels (#40)
 

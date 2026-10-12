@@ -333,9 +333,16 @@ fn parse_method(
 ) -> Result<Member, Error> {
     let before_paren = rest[..paren_pos].trim();
 
+    if before_paren.contains(')') {
+        return Err(Error::ParseError(format!(
+            "method closing `)` precedes opening `(`: {rest:?}"
+        )));
+    }
+
     // Find the matching `)`.
-    let close = rest
+    let close = rest[paren_pos + 1..]
         .find(')')
+        .map(|relative| paren_pos + 1 + relative)
         .ok_or_else(|| Error::ParseError(format!("method missing closing `)`: {rest:?}")))?;
 
     let params = rest[paren_pos + 1..close].trim().to_string();
@@ -359,7 +366,7 @@ fn parse_method(
     let (name, return_type_before) =
         if let Some(last_space) = before_paren.rfind(char::is_whitespace) {
             let prefix = before_paren[..last_space].trim();
-            let name_part = before_paren[last_space + 1..].trim();
+            let name_part = before_paren[last_space..].trim();
             let (name_clean, _, _) = strip_suffixes(name_part);
             let prefix_type = if prefix.is_empty() {
                 None

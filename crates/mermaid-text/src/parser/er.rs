@@ -468,7 +468,7 @@ fn split_last_token(s: &str) -> Option<(&str, &str)> {
     let trimmed = s.trim_end();
     let last_space = trimmed.rfind(char::is_whitespace)?;
     let head = trimmed[..last_space].trim_end();
-    let tail = trimmed[last_space + 1..].trim_start();
+    let tail = trimmed[last_space..].trim_start();
     if head.is_empty() || tail.is_empty() {
         return None;
     }
@@ -481,7 +481,7 @@ fn split_first_token(s: &str) -> Option<(&str, &str)> {
     let trimmed = s.trim_start();
     let first_space = trimmed.find(char::is_whitespace)?;
     let head = trimmed[..first_space].trim_end();
-    let tail = trimmed[first_space + 1..].trim_start();
+    let tail = trimmed[first_space..].trim_start();
     if head.is_empty() || tail.is_empty() {
         return None;
     }

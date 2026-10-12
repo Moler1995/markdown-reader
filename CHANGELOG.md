@@ -5,6 +5,19 @@ All notable changes to `markdown-tui-explorer` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Bundled mermaid-text classDiagram parsing no longer panics on non-ASCII
+  class names or rejected member shorthand (#50). Original fix and
+  regression tests by @worldnine in #51; maintainer review adds exact
+  diagnostic and parsed relationship assertions. The same review also fixes
+  Unicode whitespace panics in class methods and ER relationships, plus a
+  malformed-parenthesis class-method panic.
+- Update the Rustls lockfile to 0.23.45 (and rustls-webpki to 0.103.15)
+  to resolve RUSTSEC-2026-0285 found by the local advisory gate.
+
 ## [1.35.1] — 2026-08-31
 
 ### Fixed — Mermaid quoted and delimiter-containing labels (#40)
