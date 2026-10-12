@@ -8,7 +8,7 @@ application and 0.57.4 for mermaid-text; no release/publish is requested.
 Each issue declared a 600 implementation/documentation line ceiling, zero
 unrelated snapshot reclassification and zero regressions. Separate scope notes
 record failing reproductions, discarded weak assertions and final evidence.
-Only eight #41 note/activation snapshots changed. Shared `sequence.rs` merged
+Only nine related note/activation/autonumber snapshots changed. Shared `sequence.rs` merged
 cleanly; changelog insertion conflicts were resolved into one coherent entry.
 
 GPT-6.1 review-pr and fix-review-findings cover runtime/correctness,
@@ -21,15 +21,17 @@ reported terminal GUI is unavailable here. This is an external validation
 limit; the PR must not claim the visual symptom is directly reproduced/fixed.
 All local raster/geometry and protocol regressions still must pass.
 
-Initial integrated gates: format, clippy, stable workspace tests, deny, audit
-and default docs passed. Rust 1.92 exposed an existing integration-test binary
-lookup bug when using a custom target directory: runtime Cargo binary env was
-absent and the fallback path did not exist. The suite passed with an explicit
-binary-path environment override; the review will fix the three helper copies
-to use Cargo’s compile-time binary path, then rerun without that override.
+Initial Rust1.92 testing exposed an existing custom-target binary lookup bug:
+runtime Cargo binary env was absent and the fallback path did not exist. The
+three helpers now use Cargo's compile-time binary path; full tests pass without
+an override. 6.1 review also reproduced canvas/continuation, note, autonumber,
+activation-index/performance and raster-assertion gaps. All nine findings are
+resolved in this PR and independent runtime/tests cross-review is clean.
 
-GPT-6.1 boundary probes also reproduced combining-mark clipping, stale wide
-continuations, public box-table geometry, activation/note collision and new
-per-message activation scans. These findings must be resolved before marking
-the PR ready. Final integrated gates: pending. Hardware/Linux GUI checks are
-not claimed.
+Final integrated gates all exit 0: fmt, workspace/all-target clippy with warnings
+denied, full stable and Rust1.92 workspace tests, deny, audit and default docs.
+Existing strict rustdoc link warnings remain; no Linux/WezTerm GUI check is
+claimed. The stacked base is outside CI's master-only PR filter; these are local
+results, not GitHub CI claims. Per-issue implementation and scope notes remain
+within their 600-line ceilings after sharing glyph primitives; independent
+review/integration records document the cross-cutting audit separately.

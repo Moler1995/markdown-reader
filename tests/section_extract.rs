@@ -4,21 +4,12 @@
 //! stdout content and exit code.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-/// Resolve the path to the compiled debug binary.
+/// Use Cargo's compiled binary path, including custom target directories.
 fn binary() -> PathBuf {
-    // `CARGO_BIN_EXE_markdown-reader` is set by Cargo when running integration
-    // tests for binaries in the same workspace package. Fall back to a relative
-    // path for manual invocation.
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_markdown-reader") {
-        return p.into();
-    }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("debug")
-        .join("markdown-reader")
+    env!("CARGO_BIN_EXE_markdown-reader").into()
 }
 
 /// Fixture document shared across several tests.

@@ -39,7 +39,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::class::{Class, ClassDiagram, Member, RelKind, Relation};
 use crate::layout::layered::{LayoutConfig, LayoutResult, layout as layered_layout};
-use crate::render::box_table::{NAME_PAD, grid_to_string_with_marks, put, put_str_with_marks};
+use crate::render::box_table::{
+    NAME_PAD, grid_to_string_with_marks, put_cell as put, put_str_with_marks,
+};
 use crate::types::{Direction, Edge, EdgeEndpoint, EdgeStyle, Graph, Node, NodeShape};
 
 // ---------------------------------------------------------------------------

@@ -117,7 +117,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
 
     // cell(row, col) → char; initialise to space.
     let mut grid: Vec<Vec<char>> = vec![vec![' '; canvas_width]; rows + 2]; // +2 for arrows
-    let mut combining_marks = std::collections::HashMap::new();
+    let mut marks = std::collections::HashMap::new();
 
     // Draw y-axis (vertical bar + top/bottom arrows).
     // Row 0 = top arrow `^`, row 1..rows = body, row rows+1 = bottom arrow `v`.
@@ -155,7 +155,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
         // Top-right: place starting at center_col+2
         place_text(
             &mut grid,
-            &mut combining_marks,
+            &mut marks,
             label_row_top,
             center_col + 2,
             q1,
@@ -166,7 +166,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
         // Top-left: right-align before center_col-2
         place_text_right_aligned(
             &mut grid,
-            &mut combining_marks,
+            &mut marks,
             label_row_top,
             center_col.saturating_sub(2),
             q2,
@@ -176,7 +176,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
         // Bottom-left: right-align before center_col-2
         place_text_right_aligned(
             &mut grid,
-            &mut combining_marks,
+            &mut marks,
             label_row_bot,
             center_col.saturating_sub(2),
             q3,
@@ -186,7 +186,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
         // Bottom-right: place starting at center_col+2
         place_text(
             &mut grid,
-            &mut combining_marks,
+            &mut marks,
             label_row_bot,
             center_col + 2,
             q4,
@@ -266,7 +266,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
             // (a) Full label fits on the right and the region is unoccupied.
             place_text(
                 &mut grid,
-                &mut combining_marks,
+                &mut marks,
                 grid_row,
                 right_start,
                 &label,
@@ -279,7 +279,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
             let left_start = col - label_width;
             place_text(
                 &mut grid,
-                &mut combining_marks,
+                &mut marks,
                 grid_row,
                 left_start,
                 &label,
@@ -294,7 +294,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
                 let with_ellipsis = format!("{truncated}\u{2026}");
                 place_text(
                     &mut grid,
-                    &mut combining_marks,
+                    &mut marks,
                     grid_row,
                     right_start,
                     &with_ellipsis,
@@ -307,13 +307,12 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
     // Render x-axis edge labels.
     // Left label is `low`; right label is `high`. They are placed on x_axis_grid_row
     // at the far left/right edges, overwriting axis dashes.
-    let total_grid_rows = rows + 2;
     if let Some(x_ax) = &diag.x_axis {
         if !x_ax.low.is_empty() {
             // Place at the very left edge; the label sits on top of the dashes.
             place_text(
                 &mut grid,
-                &mut combining_marks,
+                &mut marks,
                 x_axis_grid_row,
                 0,
                 &x_ax.low,
@@ -325,7 +324,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
             let start_col = canvas_width.saturating_sub(hw);
             place_text(
                 &mut grid,
-                &mut combining_marks,
+                &mut marks,
                 x_axis_grid_row,
                 start_col,
                 &x_ax.high,
@@ -334,23 +333,11 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
         }
     }
 
-    // Emit all grid rows.
-    for (row_idx, row) in grid.iter().enumerate().take(total_grid_rows) {
-        let mut row_str = String::new();
-        for (col, &ch) in row.iter().enumerate() {
-            if ch == '\0' {
-                continue;
-            }
-            row_str.push(ch);
-            if let Some(suffix) = combining_marks.get(&(row_idx, col)) {
-                row_str.push_str(suffix);
-            }
-        }
-        // Trim trailing spaces.
-        let trimmed = row_str.trim_end();
-        out.push_str(trimmed);
-        out.push('\n');
-    }
+    // Emit display columns with the same continuation and suffix rules as boxes.
+    out.push_str(&crate::render::box_table::grid_to_string_with_marks(
+        &grid, &marks,
+    ));
+    out.push('\n');
 
     // Axis label — bottom (low y)
     if let Some(y_ax) = &diag.y_axis {
@@ -472,42 +459,7 @@ fn place_text(
     text: &str,
     max_col: usize,
 ) {
-    let row_len = grid[row].len();
-    let limit = max_col.min(row_len);
-    let mut col = start_col;
-    for ch in text.chars() {
-        if col >= limit {
-            break;
-        }
-        let char_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-        if char_width == 0 {
-            if col > start_col {
-                let glyph_col = if grid[row][col - 1] == '\0' {
-                    col.saturating_sub(2)
-                } else {
-                    col - 1
-                };
-                marks.entry((row, glyph_col)).or_default().push(ch);
-            }
-            continue;
-        }
-        if char_width == 2 && col + 1 >= limit {
-            break;
-        }
-        if grid[row][col] == '\0' {
-            col += char_width;
-            continue;
-        }
-        if col + 1 < limit && grid[row][col + 1] == '\0' {
-            grid[row][col + 1] = ' ';
-        }
-        grid[row][col] = ch;
-        marks.remove(&(row, col));
-        if char_width == 2 && col + 1 < limit {
-            grid[row][col + 1] = '\0';
-        }
-        col += char_width;
-    }
+    crate::render::box_table::put_str_clipped(grid, marks, row, start_col, text, max_col);
 }
 
 /// Place `text` right-aligned so its last character is at `end_col`.

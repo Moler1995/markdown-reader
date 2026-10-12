@@ -79,3 +79,39 @@ below. Do not create follow-up issues for in-scope gaps.
   `RUSTSEC-2026-0285` (the advisory requires rustls >=0.23.45). The root
   integration handles this shared lockfile remediation; this issue branch
   records the baseline finding without duplicating the dependency change.
+
+## PR #53 review repairs
+
+Review found that the raster tag assertion could pass when a renderer dropped
+visible tag content and merely added transparent columns. The repaired test
+requires tagged output to contain more visible alpha pixels than the untagged
+control, retaining the bold/plain comparison and measured terminal geometry.
+The genuine tagged image passes this assertion. Transparent padding
+adds zero visible pixels, so a padded copy has exactly the control's visible
+pixel count and fails the strict greater-than assertion. This directly rejects
+the counterexample without adding a test that merely mirrors the helper.
+
+The integrated Rust 1.92 run also failed to launch the application in
+`tests/check_links.rs`: its runtime Cargo binary-path variable was absent and
+its repository-local fallback did not match the custom target directory. The
+same helper exists in `export_html.rs` and `section_extract.rs`. All three now
+use Cargo's compile-time binary path. Focused suites passed on stable and
+Rust 1.92 with the shared custom target directory and no runtime binary-path
+override. The observed failing log is
+`/tmp/markdown-reader-combined-checks/3.log`.
+
+Protocol comments describe iTerm2 as the documented working primary
+WezTerm choice; upstream GUI QA and the reported WSL presentation remain
+unverified. These repairs stay within the 600-line scope ceiling and add no
+dependency or CI job.
+
+### Focused repair validation
+
+- All three integration suites passed on stable and Rust 1.92: 2 check-links,
+  1 HTML export and 6 section-extraction tests on each compiler. Both commands
+  used `/Users/leboiko/dev/markdown-reader-issue-50/target` and explicitly
+  removed `CARGO_BIN_EXE_markdown-reader` from the runtime environment.
+- The reported-equation raster regression passed with the stronger visible
+  ink assertion, bold/plain image control and terminal-cell geometry check.
+- The WezTerm protocol-selection and non-WezTerm preservation tests passed.
+- Logs: `/tmp/markdown-reader-pr53-math-tests/{0,1,2,3}.log`, all exit 0.

@@ -519,9 +519,11 @@ mod tests {
             tagged_dimensions.0 > untagged_dimensions.0,
             "equation tag must add raster width: tagged {tagged_dimensions:?}, untagged {untagged_dimensions:?}"
         );
+        let tagged_ink = tagged_image.pixels().filter(|pixel| pixel[3] > 0).count();
+        let untagged_ink = untagged_image.pixels().filter(|pixel| pixel[3] > 0).count();
         assert!(
-            tagged_image.pixels().any(|pixel| pixel[3] > 0),
-            "reported equation must contain visible non-transparent pixels"
+            tagged_ink > untagged_ink,
+            "equation tag must add visible ink, not transparent padding: tagged {tagged_ink}, untagged {untagged_ink}"
         );
         assert_images_differ(&untagged_image, &plain_image, "bold vector symbols");
         assert_images_differ(&tagged_image, &untagged_image, "equation tag");

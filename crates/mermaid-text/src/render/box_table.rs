@@ -12,7 +12,8 @@
 //! # Design invariants
 //!
 //! - Drawing uses a `&mut [Vec<char>]` grid slice with NUL continuation markers
-//!   for wide glyphs. Callers own the grid and allocate it large enough.
+//!   for wide glyphs. Legacy helpers store combining scalars inline; marked
+//!   helpers keep them in a sidecar and retain fixed-cell rows.
 //! - `put` and `put_str` are bounds-checked and silently drop out-of-bounds
 //!   writes, so callers do not need to track whether a coordinate is valid.
 //! - `pad_right` produces display-width-aware padding using [`unicode_width`].
@@ -31,7 +32,7 @@ pub const NAME_PAD: usize = 2;
 
 /// Write a single character into `grid[row][col]`, silently ignoring
 /// out-of-bounds coordinates.
-pub fn put(grid: &mut [Vec<char>], row: usize, col: usize, ch: char) {
+pub(crate) fn put_cell(grid: &mut [Vec<char>], row: usize, col: usize, ch: char) {
     if let Some(line) = grid.get_mut(row) {
         if col >= line.len() || line[col] == '\0' {
             return;
@@ -43,40 +44,39 @@ pub fn put(grid: &mut [Vec<char>], row: usize, col: usize, ch: char) {
     }
 }
 
-/// Write `s` into display-width cells starting at `grid[row][col]`.
-/// Out-of-bounds glyphs are silently dropped. Use [`put_str_with_marks`] when
-/// combining marks must be retained separately from their base glyphs.
+/// Write a glyph at a terminal column, retaining inline combining scalars.
+pub fn put(grid: &mut [Vec<char>], row: usize, col: usize, ch: char) {
+    put_str(grid, row, col, &ch.to_string());
+}
+
+/// Write text at terminal columns. Combining scalars are stored inline without
+/// consuming columns; subsequent public writes retain the same coordinates.
 pub fn put_str(grid: &mut [Vec<char>], row: usize, col: usize, s: &str) {
     let Some(line) = grid.get_mut(row) else {
         return;
     };
-    let mut c = col;
-    for ch in s.chars() {
-        if c >= line.len() {
-            break;
-        }
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
-        if char_width == 0 {
-            if c > col && c - 1 < line.len() && line[c - 1] != '\0' {
-                // Keep the mark in its own storage slot so the next scalar
-                // cannot replace it; terminal display width remains zero.
-                line[c] = ch;
-                c += 1;
+    let mut cells = Vec::with_capacity(line.len());
+    let mut marks = std::collections::HashMap::<(usize, usize), String>::new();
+    let mut last = None;
+    for &ch in line.iter() {
+        if ch != '\0' && UnicodeWidthChar::width(ch) == Some(0) {
+            if let Some(base) = last {
+                marks.entry((0, base)).or_default().push(ch);
             }
-            continue;
+        } else {
+            if ch != '\0' {
+                last = Some(cells.len());
+            }
+            cells.push(ch);
         }
-        if line[c] == '\0' {
-            c += char_width;
-            continue;
+    }
+    put_str_with_marks(std::slice::from_mut(&mut cells), &mut marks, 0, col, s);
+    line.clear();
+    for (col, ch) in cells.into_iter().enumerate() {
+        line.push(ch);
+        if let Some(suffix) = marks.get(&(0, col)) {
+            line.extend(suffix.chars());
         }
-        if c + 1 < line.len() && line[c + 1] == '\0' {
-            line[c + 1] = ' ';
-        }
-        line[c] = ch;
-        if char_width == 2 && c + 1 < line.len() {
-            line[c + 1] = '\0';
-        }
-        c += char_width;
     }
 }
 
@@ -89,15 +89,25 @@ pub fn put_str_with_marks(
     col: usize,
     s: &str,
 ) {
+    put_str_clipped(grid, marks, row, col, s, usize::MAX);
+}
+
+/// Shared fixed-cell writer with an exclusive terminal-column limit.
+pub(crate) fn put_str_clipped(
+    grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
+    row: usize,
+    col: usize,
+    s: &str,
+    max_col: usize,
+) {
     let Some(line) = grid.get_mut(row) else {
         return;
     };
+    let limit = max_col.min(line.len());
     let mut c = col;
     let mut last_glyph = None;
     for ch in s.chars() {
-        if c >= line.len() {
-            break;
-        }
         let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
         if char_width == 0 {
             if let Some(glyph_col) = last_glyph {
@@ -105,18 +115,22 @@ pub fn put_str_with_marks(
             }
             continue;
         }
-        if char_width == 2 && c + 1 >= line.len() {
+        if c >= limit || char_width == 2 && c + 1 >= limit {
             break;
         }
         if line[c] == '\0' {
+            last_glyph = None;
             c += char_width;
             continue;
         }
-        if c + 1 < line.len() && line[c + 1] == '\0' {
-            line[c + 1] = ' ';
+        for replaced in c..c + char_width {
+            marks.remove(&(row, replaced));
+            if replaced + 1 < line.len() && line[replaced + 1] == '\0' {
+                line[replaced + 1] = ' ';
+                marks.remove(&(row, replaced + 1));
+            }
         }
         line[c] = ch;
-        marks.remove(&(row, c));
         last_glyph = Some(c);
         if char_width == 2 && c + 1 < line.len() {
             line[c + 1] = '\0';
@@ -158,14 +172,18 @@ pub fn grid_to_string_with_marks(
     let mut out = String::with_capacity(grid.iter().map(|r| r.len() + 1).sum());
     for (row_idx, row) in grid.iter().enumerate() {
         let mut line = String::new();
-        for (col, &ch) in row.iter().enumerate() {
-            if ch == '\0' {
-                continue;
+        let mut col = 0;
+        for &ch in row {
+            if ch != '\0' {
+                line.push(ch);
+                if UnicodeWidthChar::width(ch) == Some(0) {
+                    continue;
+                }
+                if let Some(suffix) = marks.get(&(row_idx, col)) {
+                    line.push_str(suffix);
+                }
             }
-            line.push(ch);
-            if let Some(suffix) = marks.get(&(row_idx, col)) {
-                line.push_str(suffix);
-            }
+            col += 1;
         }
         out.push_str(line.trim_end());
         out.push('\n');
@@ -193,10 +211,9 @@ pub fn hline(
     left_cap: char,
     right_cap: char,
 ) {
-    put(grid, row, left, left_cap);
-    for c in (left + 1)..right {
-        put(grid, row, c, '─');
-    }
+    let Some(line) = grid.get(row) else { return };
+    let middle = "─".repeat(right.saturating_sub(left.saturating_add(1)).min(line.len()));
+    put_str(grid, row, left, &format!("{left_cap}{middle}"));
     put(grid, row, right, right_cap);
 }
 

@@ -13,7 +13,10 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   to their base glyph. Reported by @worldnine in #52.
 - State-note links preserve the actual final route corner, including left
   notes. Nested sequence activations render continuous, distinct bars with
-  labels and arrows outside their reserved lanes (#41).
+  labels and arrows outside their reserved lanes, including autonumber
+  prefixes. Notes retain their anchors/text and cover intersecting lanes;
+  exposed bars remain continuous. Invalid public message entries retain
+  original activation indices (#41).
 
 ## 0.57.3 — 2026-10-07 — classDiagram UTF-8 keyword probe (#50)
 

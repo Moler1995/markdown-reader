@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   borders across grid, sequence, class/ER tables and quadrant charts (#52).
   Combining marks stay attached to their labels. Reported by @worldnine.
 - State-note links preserve their final route corner. Nested sequence
-  activation bars use distinct, continuous lanes with clear labels (#41).
+  activation bars use distinct lanes with clear labels, including autonumber
+  prefixes. Sequence notes keep their text/borders and intentionally cover
+  underlying lanes; exposed lane spans remain continuous (#41).
 - Non-ASCII class names and Unicode whitespace in class methods/ER
   relationships no longer panic; malformed class-method parentheses return
   a parse error (#50). Original keyword fix and regressions by @worldnine

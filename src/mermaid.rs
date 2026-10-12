@@ -598,10 +598,10 @@ fn is_wezterm_marked(executable: Option<&str>, term_program: Option<&str>) -> bo
         || term_program.is_some_and(|value| value.eq_ignore_ascii_case("wezterm"))
 }
 
-/// Prefer WezTerm's stable iTerm2 protocol over Kitty/Sixel. The library's
-/// environment hint blacklists Kitty and Sixel only when `WEZTERM_EXECUTABLE`
-/// is set; when only `TERM_PROGRAM` identifies WezTerm, a successful Kitty
-/// probe otherwise wins over its iTerm2 environment fallback.
+/// Prefer WezTerm's documented working iTerm2 protocol over Kitty/Sixel. The
+/// library's environment hint blacklists Kitty and Sixel only when
+/// `WEZTERM_EXECUTABLE` is set; when only `TERM_PROGRAM` identifies WezTerm,
+/// a successful Kitty probe otherwise wins over its iTerm2 environment fallback.
 fn prefer_wezterm_protocol(picker: &mut Picker, wezterm: bool) {
     if wezterm {
         picker.set_protocol_type(ProtocolType::Iterm2);
@@ -758,8 +758,8 @@ fn has_limited_rendering(source: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// WezTerm supports Kitty graphics, but ratatui-image's compatibility
-    /// matrix identifies iTerm2 as its bug-free protocol. This models a
+    /// ratatui-image's compatibility matrix lists iTerm2 as WezTerm's working
+    /// primary protocol; its GUI QA remains unverified. This models a
     /// successful Kitty probe with only TERM_PROGRAM available (the WSL case).
     #[test]
     fn wezterm_uses_iterm2_even_when_kitty_probe_succeeds() {

@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::er::{AttributeKey, Cardinality, ErDiagram, Relationship};
 use crate::render::box_table::{
-    NAME_PAD, grid_to_string_with_marks, pad_right, put, put_str_with_marks,
+    NAME_PAD, grid_to_string_with_marks, pad_right, put_cell as put, put_str_with_marks,
 };
 
 /// Default terminal width budget. Diagrams narrower than this use a single row.

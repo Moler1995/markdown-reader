@@ -211,3 +211,182 @@ fn activation_spans_are_exact_continuous_and_distinct() {
         assert_labels_clear_of_activation_bars(&out, bar, &["call", "self"]);
     }
 }
+
+fn exact_note(out: &str, ascii: bool, top: usize, left: usize, width: usize, text: &str) {
+    let rows = lines(out);
+    let horizontal = if ascii { '-' } else { '─' };
+    let expected = [
+        format!(
+            "{}{}{}",
+            if ascii { '+' } else { '╭' },
+            horizontal.to_string().repeat(width - 2),
+            if ascii { '+' } else { '╮' }
+        ),
+        format!(
+            "{} {}{}{}",
+            if ascii { '|' } else { '│' },
+            text,
+            " ".repeat(width - text.len() - 3),
+            if ascii { '|' } else { '│' }
+        ),
+        format!(
+            "{}{}{}",
+            if ascii { '+' } else { '╰' },
+            horizontal.to_string().repeat(width - 2),
+            if ascii { '+' } else { '╯' }
+        ),
+    ];
+    for (offset, expected) in expected.iter().enumerate() {
+        let actual: String = rows[top + offset].iter().skip(left).take(width).collect();
+        assert_eq!(
+            &actual, expected,
+            "note row {offset} must remain exact:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn nested_right_of_note_reserves_both_activation_lanes() {
+    let src = "sequenceDiagram\nA->>+B: call\nA->>+B: inner\nnote right of B: exact note\nB-->>-A: reply\nB-->>-A: done";
+    for ascii in [false, true] {
+        let out = if ascii {
+            render_ascii(src)
+        } else {
+            render(src)
+        }
+        .unwrap();
+        let b = center(&out, "B");
+        exact_note(&out, ascii, 8, b + 7, 14, "exact note");
+        assert_lanes(
+            &out,
+            if ascii { '#' } else { '█' },
+            &[(b, 3, 14), (b + 3, 5, 12)],
+        );
+    }
+}
+
+#[test]
+fn over_notes_are_opaque_and_exposed_lanes_remain_continuous() {
+    for (src, pair, top, text) in [
+        (
+            "sequenceDiagram\nA->>+B: call\nnote over B: exact note\nB-->>-A: done",
+            false,
+            6,
+            "exact note",
+        ),
+        (
+            "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nA->>+B: call\nA->>+B: inner\nnote over B,C: exact pair\nB-->>-A: reply\nB-->>-A: done",
+            true,
+            8,
+            "exact pair",
+        ),
+    ] {
+        for ascii in [false, true] {
+            let out = if ascii {
+                render_ascii(src)
+            } else {
+                render(src)
+            }
+            .unwrap();
+            let b = center(&out, "B");
+            let (left, width) = if pair {
+                let c = center(&out, "C");
+                let width = (text.len() + 4).max(c - b + 3);
+                ((b + c) / 2 - width / 2, width)
+            } else {
+                (b - (text.len() + 4) / 2, text.len() + 4)
+            };
+            exact_note(&out, ascii, top, left, width, text);
+            let bar = if ascii { '#' } else { '█' };
+            let mut spans = vec![(b, 3, top - 1), (b, top + 3, if pair { 14 } else { 10 })];
+            if pair {
+                spans.extend([(b + 3, 5, top - 1), (b + 3, top + 3, 12)]);
+            }
+            assert_lanes(&out, bar, &spans);
+        }
+    }
+}
+
+#[test]
+fn notes_at_one_boundary_keep_source_order_and_original_over_anchor() {
+    let src = "sequenceDiagram\nA->>+B: call\nnote over B: first note\nnote right of B: second note\nB-->>-A: done";
+    for ascii in [false, true] {
+        let out = if ascii {
+            render_ascii(src)
+        } else {
+            render(src)
+        }
+        .unwrap();
+        let b = center(&out, "B");
+        exact_note(&out, ascii, 6, b - 7, 14, "first note");
+        exact_note(&out, ascii, 10, b + 4, 15, "second note");
+        assert_lanes(
+            &out,
+            if ascii { '#' } else { '█' },
+            &[(b, 3, 5), (b, 9, 14)],
+        );
+    }
+}
+
+#[test]
+fn unknown_public_messages_do_not_shift_valid_activation_indices_or_drop_notes() {
+    let mut diagram =
+        mermaid_text::parser::sequence::parse("sequenceDiagram\nA->>+B: call\nB-->>-A: done")
+            .unwrap();
+    let mut unknown = diagram.messages[0].clone();
+    unknown.from = "unknown".into();
+    diagram.messages.insert(0, unknown);
+    for activation in &mut diagram.activations {
+        activation.start_message += 1;
+        activation.end_message += 1;
+    }
+    let out = mermaid_text::render::sequence::render(&diagram);
+    let b = center(&out, "B");
+    assert_lanes(&out, '█', &[(b, 3, 6)]);
+    diagram.notes.push(mermaid_text::sequence::NoteEvent {
+        anchor: mermaid_text::sequence::NoteAnchor::Over("A".into()),
+        text: "boundary note".into(),
+        after_message: 1,
+    });
+    let out = mermaid_text::render::sequence::render(&diagram);
+    exact_note(&out, false, 4, 0, 17, "boundary note");
+}
+
+#[test]
+fn autonumber_labels_fit_before_active_intermediate_and_inside_self_loop() {
+    let src = "sequenceDiagram\nparticipant A\nparticipant B\nparticipant C\nautonumber 1000000000\nactivate B\nA->>C: abcdefghijklmnopqrstuvwxy\ndeactivate B";
+    let expected = "[1000000000] abcdefghijklmnopqrstuvwxy";
+    for ascii in [false, true] {
+        let out = if ascii {
+            render_ascii(src)
+        } else {
+            render(src)
+        }
+        .unwrap();
+        let rows = lines(&out);
+        let a = center(&out, "A");
+        let b = center(&out, "B");
+        let actual: String = rows[3].iter().skip(a + 2).take(expected.len()).collect();
+        assert_eq!(
+            actual, expected,
+            "complete numbered label at its origin:\n{out}"
+        );
+        assert!(
+            a + 2 + expected.len() < b,
+            "numbered label must clear intermediate lane"
+        );
+        assert_lanes(&out, if ascii { '#' } else { '█' }, &[(b, 3, 4)]);
+        let out = if ascii {render_ascii("sequenceDiagram\nparticipant A\nautonumber 1000000000\nA->>+A: selfcall\nA-->>-A: return")} else {render("sequenceDiagram\nparticipant A\nautonumber 1000000000\nA->>+A: selfcall\nA-->>-A: return")}.unwrap();
+        let a = center(&out, "A");
+        let rows = lines(&out);
+        for (row, label) in [(5, "[1000000000] selfcall"), (9, "[1000000001] return")] {
+            let actual: String = rows[row].iter().skip(a + 3).take(label.len()).collect();
+            assert_eq!(actual, label, "numbered self label must not clip:\n{out}");
+            assert_eq!(
+                rows[row][a + 2 + label.len().max(4) + 3],
+                if ascii { '|' } else { '│' },
+                "self loop right wall must survive"
+            );
+        }
+    }
+}
