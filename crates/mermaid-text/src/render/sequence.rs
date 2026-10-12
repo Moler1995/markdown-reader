@@ -80,6 +80,66 @@ const LIFELINE: char = '┆';
 const ACTIVATION_BAR: char = '█';
 const ACTIVATION_BAR_WIDTH: usize = 2;
 
+/// Parsed activations close in LIFO order. Equal message ranges still occupy
+/// distinct lanes: the earlier closed span is the inner one.
+fn activation_depth(diag: &SequenceDiagram, index: usize) -> usize {
+    let act = &diag.activations[index];
+    diag.activations
+        .iter()
+        .enumerate()
+        .filter(|&(other_index, other)| {
+            other_index != index
+                && other.participant == act.participant
+                && other.start_message <= act.start_message
+                && other.end_message >= act.end_message
+                && ((other.start_message, other.end_message)
+                    != (act.start_message, act.end_message)
+                    || other_index > index)
+        })
+        .count()
+}
+
+fn activation_widths(diag: &SequenceDiagram, depths: &[usize]) -> Vec<usize> {
+    let mut widths = vec![0; diag.participants.len()];
+    for (index, act) in diag.activations.iter().enumerate() {
+        if let Some(pi) = diag.participant_index(&act.participant) {
+            widths[pi] =
+                widths[pi].max(depths[index] * (ACTIVATION_BAR_WIDTH + 1) + ACTIVATION_BAR_WIDTH);
+        }
+    }
+    widths
+}
+
+/// Right edge of the active lanes at a message, or the ordinary lifeline.
+fn message_anchor(
+    diag: &SequenceDiagram,
+    layouts: &[ParticipantLayout],
+    depths: &[usize],
+    pi: usize,
+    message: usize,
+    right: bool,
+) -> usize {
+    let width = diag
+        .activations
+        .iter()
+        .enumerate()
+        .filter(|(_, act)| {
+            act.participant == diag.participants[pi].id
+                && act.start_message <= message
+                && message <= act.end_message
+        })
+        .map(|(index, _)| depths[index] * (ACTIVATION_BAR_WIDTH + 1) + ACTIVATION_BAR_WIDTH)
+        .max()
+        .unwrap_or(0);
+    if width == 0 {
+        layouts[pi].center
+    } else if right {
+        layouts[pi].center + width
+    } else {
+        layouts[pi].center.saturating_sub(1)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Canvas
 // ---------------------------------------------------------------------------
@@ -194,7 +254,7 @@ struct ParticipantLayout {
 /// 2. The gap between adjacent centres is at least `MIN_GAP`.
 /// 3. The gap is widened further when a message label crossing that gap
 ///    would not otherwise fit.
-fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
+fn compute_layout(diag: &SequenceDiagram, lane_widths: &[usize]) -> Vec<ParticipantLayout> {
     let n = diag.participants.len();
     if n == 0 {
         return Vec::new();
@@ -231,7 +291,13 @@ fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
         // Label needs `label_width + LABEL_PADDING` cells of clearance along
         // its arrow; divide across the spans the arrow crosses.
         let label_need = msg.text.width() + LABEL_PADDING;
-        let per_gap = label_need.div_ceil(spans);
+        // With active lanes, keep a label in the first gap so an intervening
+        // participant's continuous bar cannot overwrite it.
+        let per_gap = if diag.activations.is_empty() {
+            label_need.div_ceil(spans)
+        } else {
+            label_need
+        };
         for slot in gap_mins.iter_mut().take(hi).skip(lo) {
             *slot = (*slot).max(per_gap);
         }
@@ -252,7 +318,11 @@ fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
         let center = if i == 0 {
             left_margin
         } else {
-            prev_center + box_widths[i - 1] / 2 + gap_mins[i - 1] + box_widths[i] / 2
+            prev_center
+                + box_widths[i - 1] / 2
+                + gap_mins[i - 1]
+                + box_widths[i] / 2
+                + lane_widths[i - 1]
         };
         layouts.push(ParticipantLayout {
             center,
@@ -698,7 +768,13 @@ pub fn render(diag: &SequenceDiagram) -> String {
         return String::new();
     }
 
-    let layouts = compute_layout(diag);
+    // Nesting depth is invariant across messages; compute it once instead of
+    // repeating the containment scan for every endpoint.
+    let depths: Vec<_> = (0..diag.activations.len())
+        .map(|i| activation_depth(diag, i))
+        .collect();
+    let lane_widths = activation_widths(diag, &depths);
+    let layouts = compute_layout(diag, &lane_widths);
 
     // Determine canvas dimensions.
     // Header: rows 0-2 (BOX_HEIGHT = 3).
@@ -784,7 +860,8 @@ pub fn render(diag: &SequenceDiagram) -> String {
         .map(|m| m.text.width() + 6)
         .max()
         .unwrap_or(0);
-    let participant_width = last.center + last.box_width / 2 + 2 + self_msg_extra;
+    let participant_width =
+        last.center + last.box_width / 2 + 2 + self_msg_extra + lane_widths[n - 1];
 
     // Widen the canvas when a note's wrapped text + box overhead would exceed
     // the participant span. This handles unbreakable words (a word wider than
@@ -1006,13 +1083,14 @@ pub fn render(diag: &SequenceDiagram) -> String {
         message_arrow_rows.push(arrow_row);
 
         if si == ti {
-            draw_self_message(&mut canvas, layouts[si].center, arrow_row, label, msg.style);
+            let anchor = message_anchor(diag, &layouts, &depths, si, msg_idx, true);
+            draw_self_message(&mut canvas, anchor, arrow_row, label, msg.style);
             arrow_row += SELF_MSG_ROW_H;
         } else {
             draw_message(
                 &mut canvas,
-                layouts[si].center,
-                layouts[ti].center,
+                message_anchor(diag, &layouts, &depths, si, msg_idx, si < ti),
+                message_anchor(diag, &layouts, &depths, ti, msg_idx, ti < si),
                 arrow_row,
                 label,
                 msg.style,
@@ -1037,74 +1115,30 @@ pub fn render(diag: &SequenceDiagram) -> String {
         &mut branch_divider_rows,
     );
 
-    // 4. Overlay activation bars on participant lifelines. Drawn last so
-    //    they sit on top of the dashed lifeline glyph but skip cells
-    //    already holding arrow / junction characters from messages.
-    //
-    //    The range starts at the *label row* of the activating message
-    //    (arrow_row - 1) so single-message activations still produce a
-    //    visible bar even when the arrow row itself is overwritten by
-    //    arrow chars.
-    //
-    //    Nesting: when two activations on the same participant overlap in row
-    //    range, the inner bar is drawn one step to the right of the outer bar
-    //    (offset = ACTIVATION_BAR_WIDTH + 1 per nesting level) so the two
-    //    filled rectangles appear side-by-side instead of on the same column.
-    //
-    //    Pre-compute (lo, hi, participant_index) for every activation so the
-    //    nesting-depth query doesn't need to repeat the row-translation work.
-    let act_ranges: Vec<(usize, usize, usize)> = diag
-        .activations
-        .iter()
-        .filter_map(|act| {
-            let pi = diag.participant_index(&act.participant)?;
-            let arrow_r0 = message_arrow_rows
-                .get(act.start_message)
-                .copied()
-                .unwrap_or(lifeline_start + 1);
-            let r1 = message_arrow_rows
-                .get(act.end_message)
-                .copied()
-                .unwrap_or_else(|| height.saturating_sub(2));
-            let r0 = arrow_r0.saturating_sub(1).max(lifeline_start);
-            let (lo, hi) = if r0 <= r1 { (r0, r1) } else { (r1, r0) };
-            Some((lo, hi, pi))
-        })
-        .collect();
-
-    for (i, act) in diag.activations.iter().enumerate() {
+    // 4. Draw continuous activation lanes. Message endpoints and labels
+    // were laid out outside these lanes, including nested and self calls.
+    for (index, act) in diag.activations.iter().enumerate() {
         let Some(pi) = diag.participant_index(&act.participant) else {
             continue;
         };
-        let cx = layouts[pi].center;
-        let (lo, hi, _) = act_ranges[i];
-        // Depth = number of other activations on this participant that STRICTLY
-        // CONTAIN this one (their row range fully encloses ours). Containment
-        // is order-independent, so the source-order vs deactivate-order of the
-        // activations vec doesn't matter: the outermost bar always anchors at
-        // the lifeline (depth=0); each nested deeper bar offsets one step right.
-        let depth = act_ranges
-            .iter()
-            .enumerate()
-            .filter(|&(j, &(other_lo, other_hi, other_pi))| {
-                j != i
-                    && other_pi == pi
-                    && other_lo <= lo
-                    && other_hi >= hi
-                    && (other_lo, other_hi) != (lo, hi)
-            })
-            .count();
-        let col_offset = depth * (ACTIVATION_BAR_WIDTH + 1);
-        for r in lo..=hi {
+        let Some(&start) = message_arrow_rows.get(act.start_message) else {
+            continue;
+        };
+        let Some(&end) = message_arrow_rows.get(act.end_message) else {
+            continue;
+        };
+        let self_tail = if diag.messages[act.end_message].from == diag.messages[act.end_message].to
+        {
+            2
+        } else {
+            0
+        };
+        let lo = start.saturating_sub(1).max(lifeline_start);
+        let hi = (end + self_tail).min(lifeline_end);
+        let col = layouts[pi].center + depths[index] * (ACTIVATION_BAR_WIDTH + 1);
+        for row in lo..=hi {
             for dx in 0..ACTIVATION_BAR_WIDTH {
-                let col = cx + col_offset + dx;
-                if col >= canvas.width {
-                    break;
-                }
-                let cell = canvas.grid[r][col];
-                if cell == LIFELINE || cell == ' ' {
-                    canvas.put(r, col, ACTIVATION_BAR);
-                }
+                canvas.put(row, col + dx, ACTIVATION_BAR);
             }
         }
     }

@@ -9,5 +9,5 @@ expression: out
 (  ●  )────▸│ Active │
 ╰─────╯     ╰────────╯┄┄┄┄┐
                           ┆╭─────────────────────────╮
-                          ─│ retries 3x with backoff │
+                          └│ retries 3x with backoff │
                            ╰─────────────────────────╯

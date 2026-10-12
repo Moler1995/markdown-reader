@@ -32,6 +32,14 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   a descriptive parse error instead of constructing a reversed slice. These
   pre-existing variants were discovered and reproduced during the #51 review.
 
+## Unreleased
+
+### Fixed — note links and nested activation geometry (#41)
+
+- Left state-note connectors render continuously to their annotated state.
+- Nested sequence activation bars remain distinct and clear of message labels
+  in Unicode and ASCII renderings.
+
 ## 0.57.2 — 2026-08-31 — Delimiter-aware flowchart labels (#40)
 
 ### Fixed

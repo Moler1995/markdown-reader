@@ -10,7 +10,7 @@ expression: constrained
 ╰─────╯    ╰──────▴──────╯┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┼┐
                   │                          │┆╭───────────────────────────────╮
                   │                          │┆│    Open state rejects all     │
-                  │                          │─│ traffic for cool-down period. │
+                  │                          │└│ traffic for cool-down period. │
                   │                          │ ╰───────────────────────────────╯
                   └──────────────────────────┘
                                          5 errors

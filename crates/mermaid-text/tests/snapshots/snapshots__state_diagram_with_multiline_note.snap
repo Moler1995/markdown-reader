@@ -1,6 +1,5 @@
 ---
 source: crates/mermaid-text/tests/snapshots.rs
-assertion_line: 856
 expression: out
 ---
 ╭─────╮
@@ -8,7 +7,7 @@ expression: out
 ╰─────╯                        │
                                ▸╭──────╮     ╭─────────╮
                                 │ Idle │────▸│ Working │
-                               ─╰──────╯     ╰─────────╯
+                               ┌╰──────╯     ╰─────────╯
 ╭─────────────────────────╮    ┆
 │  worker pool size = 4   │    ┆
 │ shared with retry queue │┄┄┄┄┘

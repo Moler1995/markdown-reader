@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the Rustls lockfile to 0.23.45 (and rustls-webpki to 0.103.15)
   to resolve RUSTSEC-2026-0285 found by the local advisory gate.
 
+## Unreleased
+
+### Fixed — Mermaid note and activation geometry (#41)
+
+State-diagram notes now connect continuously to their annotated state, and
+nested sequence activation bars retain distinct spans without covering message
+labels in Unicode and ASCII output.
+
 ## [1.35.1] — 2026-08-31
 
 ### Fixed — Mermaid quoted and delimiter-containing labels (#40)
