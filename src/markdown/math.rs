@@ -91,6 +91,9 @@ pub fn latex_to_unicode(input: &str) -> String {
                     let body = extract_brace_group(&chars, &mut i);
                     let body_u = latex_to_unicode(&body);
                     let _ = write!(out, "√({body_u})");
+                } else if cmd == "tag" {
+                    let body = extract_brace_group(&chars, &mut i);
+                    let _ = write!(out, "({})", latex_to_unicode(&body));
                 } else if cmd == "text"
                     || cmd == "mathrm"
                     || cmd == "mathbf"
@@ -479,6 +482,16 @@ mod tests {
     fn fraction() {
         assert_eq!(latex_to_unicode(r"\frac{a}{b}"), "a/b");
         assert_eq!(latex_to_unicode(r"\frac{x+1}{y-1}"), "(x+1)/(y-1)");
+    }
+
+    /// Equation labels are part of both the typeset and fallback output; they
+    /// must stay grouped as `(1)` instead of leaking the command name.
+    #[test]
+    fn equation_tag_is_preserved_as_a_parenthesized_number() {
+        assert_eq!(
+            latex_to_unicode(r"\frac{d\mathbf{N}(t)}{dt} = \mathbf{A}(t)\mathbf{N}(t). \tag{1}"),
+            "(dN(t))/(dt) = A(t)N(t). (1)"
+        );
     }
 
     #[test]

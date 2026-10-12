@@ -34,6 +34,16 @@ State-diagram notes now connect continuously to their annotated state, and
 nested sequence activation bars retain distinct spans without covering message
 labels in Unicode and ASCII output.
 
+## Unreleased
+
+### Changed — WezTerm display math routing (#48)
+
+WezTerm now selects the iTerm2 image protocol when its Kitty capability probe
+succeeds, including WSL setups that expose `TERM_PROGRAM` without
+`WEZTERM_EXECUTABLE`. The Unicode fallback formats `\\tag{1}` as `(1)`.
+Protocol routing is covered by a simulated picker regression; rendering in a
+WezTerm GUI remains to be verified on the reported setup.
+
 ## [1.35.1] — 2026-08-31
 
 ### Fixed — Mermaid quoted and delimiter-containing labels (#40)

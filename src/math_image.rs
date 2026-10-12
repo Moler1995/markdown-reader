@@ -499,6 +499,68 @@ mod tests {
         }
     }
 
+    /// Regression for #48: the reported equation must render as one actual
+    /// raster, and its equation number must contribute visible image width.
+    /// The image dimensions and terminal cell height are checked so an empty,
+    /// constant, or tag-dropping renderer cannot satisfy this by returning a
+    /// successful placeholder.
+    #[test]
+    fn issue_48_wezterm_equation_and_tag_are_in_the_raster() {
+        let untagged = r"\frac{d\mathbf{N}(t)}{dt} = \mathbf{A}(t)\mathbf{N}(t).";
+        let tagged = format!("{untagged} \\tag{{1}}");
+        let tagged_image = png_image(&tagged).expect("reported equation must rasterise");
+        let untagged_image = png_image(untagged).expect("control equation must rasterise");
+        let plain_image =
+            png_image(&untagged.replace(r"\mathbf", "")).expect("plain-vector control must render");
+        let tagged_dimensions = (tagged_image.width(), tagged_image.height());
+        let untagged_dimensions = (untagged_image.width(), untagged_image.height());
+
+        assert!(
+            tagged_dimensions.0 > untagged_dimensions.0,
+            "equation tag must add raster width: tagged {tagged_dimensions:?}, untagged {untagged_dimensions:?}"
+        );
+        assert!(
+            tagged_image.pixels().any(|pixel| pixel[3] > 0),
+            "reported equation must contain visible non-transparent pixels"
+        );
+        assert_images_differ(&untagged_image, &plain_image, "bold vector symbols");
+        assert_images_differ(&tagged_image, &untagged_image, "equation tag");
+        assert!(
+            tagged_dimensions.0 > 100 && tagged_dimensions.1 > 30,
+            "reported fraction and bold vectors must produce a substantive raster, got {tagged_dimensions:?}"
+        );
+
+        let picker = test_picker();
+        let (_protocol, cells) = render_blocking(&tagged, &picker, FG, 20)
+            .expect("reported equation must produce a terminal protocol");
+        let expected_cells = tagged_dimensions
+            .1
+            .div_ceil(u32::from(picker.font_size().height))
+            .saturating_add(1)
+            .clamp(MIN_MATH_HEIGHT, 20);
+        assert!(
+            cells == expected_cells,
+            "cell geometry must equal decoded pixel height / cell height plus padding row: expected {expected_cells}, got {cells}"
+        );
+    }
+
+    fn png_image(source: &str) -> Result<image::RgbaImage, String> {
+        let png = render_png(source, FG)?;
+        image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .map(|image| image.to_rgba8())
+            .map_err(|e| e.to_string())
+    }
+
+    fn assert_images_differ(left: &image::RgbaImage, right: &image::RgbaImage, reason: &str) {
+        assert!(
+            left.pixels()
+                .zip(right.pixels())
+                .any(|(left, right)| left != right)
+                || left.dimensions() != right.dimensions(),
+            "{reason} must produce different decoded pixels or dimensions"
+        );
+    }
+
     /// Decode a rendered formula's PNG and return its `(width, height)`.
     fn png_dimensions(source: &str) -> Result<(u32, u32), String> {
         let png = render_png(source, FG)?;

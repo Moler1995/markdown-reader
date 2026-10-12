@@ -147,7 +147,8 @@ drawn on the left of the viewer content when enabled.
   pure-Rust KaTeX-compatible engine, then drawn inline as a real image.
   Nested fractions, matrices, and limits stacked under `∑`/`∫` keep their
   two-dimensional structure instead of flattening to `((a)/(b))/(c)`.
-  Fonts are compiled in — nothing to install. Falls back to the Unicode
+  WezTerm selects the iTerm2 image protocol. Fonts are compiled in — nothing
+  to install. Falls back to the Unicode
   block whenever graphics are unavailable (including inside tmux) or a
   formula fails to parse, with the reason shown in the block footer.
   Inline math stays Unicode in every mode: it has to sit on a text
