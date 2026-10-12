@@ -13,7 +13,7 @@
 //! implementation.
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 use unicode_width::UnicodeWidthChar;
 
@@ -285,6 +285,10 @@ pub struct Grid {
     /// cells so that rounded corners, arrow tips, and node labels survive
     /// any subsequent edge routing that happens to cross them.
     protected: Vec<Vec<bool>>,
+    /// Cells consumed by the second terminal column of a wide glyph.
+    wide_continuation: Vec<Vec<bool>>,
+    /// Zero-width combining marks attached to the preceding visible cell.
+    combining_marks: HashMap<(usize, usize), String>,
     /// Optional foreground color per cell. Empty (all `None`) until the
     /// caller paints colors via [`Grid::set_fg`] / [`Grid::paint_fg_rect`].
     /// Consumed only by [`Grid::render_with_colors`].
@@ -321,6 +325,8 @@ impl Grid {
             obstacles: vec![vec![Obstacle::Free; width]; height],
             directions: vec![vec![0u8; width]; height],
             protected: vec![vec![false; width]; height],
+            wide_continuation: vec![vec![false; width]; height],
+            combining_marks: HashMap::new(),
             fg: vec![vec![None; width]; height],
             bg: vec![vec![None; width]; height],
             hyperlink: vec![vec![None; width]; height],
@@ -498,7 +504,7 @@ impl Grid {
     /// was previously holding a different glyph (e.g. an arrow tip that should
     /// now be a path character because the edge has no endpoint marker).
     pub fn recompute_cell_glyph(&mut self, col: usize, row: usize) {
-        if row < self.height && col < self.width {
+        if row < self.height && col < self.width && !self.wide_continuation[row][col] {
             let bits = self.directions[row][col];
             self.cells[row][col] = DIR_TO_CHAR[bits as usize];
         }
@@ -509,7 +515,15 @@ impl Grid {
     /// Out-of-bounds writes are silently ignored.
     pub fn set(&mut self, col: usize, row: usize, ch: char) {
         if row < self.height && col < self.width {
+            if self.wide_continuation[row][col] {
+                return;
+            }
+            if col + 1 < self.width && self.wide_continuation[row][col + 1] {
+                self.wide_continuation[row][col + 1] = false;
+                self.protected[row][col + 1] = false;
+            }
             self.cells[row][col] = ch;
+            self.combining_marks.remove(&(col, row));
         }
     }
 
@@ -522,7 +536,7 @@ impl Grid {
     /// stomp (corners, recomputed glyphs, etc.).
     pub fn set_unless_protected(&mut self, col: usize, row: usize, ch: char) {
         if row < self.height && col < self.width && !self.protected[row][col] {
-            self.cells[row][col] = ch;
+            self.set(col, row, ch);
         }
     }
 
@@ -731,6 +745,9 @@ impl Grid {
             let mut current_hl: Option<u32> = None;
 
             for col in 0..self.width {
+                if self.wide_continuation[row][col] {
+                    continue;
+                }
                 // --- OSC 8 hyperlink transition ---
                 // Emit the close/open sequence whenever the hyperlink changes.
                 // We compare `Option<u32>` indices rather than raw URL strings
@@ -775,6 +792,9 @@ impl Grid {
                 }
 
                 row_buf.push(self.cells[row][col]);
+                if let Some(marks) = self.combining_marks.get(&(col, row)) {
+                    row_buf.push_str(marks);
+                }
             }
 
             // Close any open hyperlink before trimming and the row-end reset.
@@ -1175,14 +1195,37 @@ impl Grid {
     /// Each character advances the column by its display width (via
     /// `unicode-width`), so multi-byte characters are handled correctly.
     pub fn write_text(&mut self, col: usize, row: usize, text: &str) {
+        if row >= self.height {
+            return;
+        }
         let mut x = col;
+        let mut last_glyph = None;
         for ch in text.chars() {
             if x >= self.width {
                 break;
             }
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+            if char_width == 0 {
+                if let Some(glyph_col) = last_glyph {
+                    self.combining_marks
+                        .entry((glyph_col, row))
+                        .or_default()
+                        .push(ch);
+                } else {
+                    self.set(x, row, ch);
+                }
+                continue;
+            }
+            if char_width == 2 && x + 1 >= self.width {
+                break;
+            }
             self.set(x, row, ch);
-            // Advance by Unicode display width (most chars = 1, CJK = 2)
-            x += UnicodeWidthChar::width(ch).unwrap_or(1);
+            last_glyph = Some(x);
+            if char_width == 2 && x + 1 < self.width {
+                self.wide_continuation[row][x + 1] = true;
+                self.protect(x + 1, row);
+            }
+            x += char_width;
         }
     }
 
@@ -1192,14 +1235,40 @@ impl Grid {
     ///
     /// Use this for edge labels that must survive later routing passes.
     pub fn write_text_protected(&mut self, col: usize, row: usize, text: &str) {
+        if row >= self.height {
+            return;
+        }
         let mut x = col;
+        let mut last_glyph = None;
         for ch in text.chars() {
             if x >= self.width {
                 break;
             }
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+            if char_width == 0 {
+                if let Some(glyph_col) = last_glyph {
+                    self.combining_marks
+                        .entry((glyph_col, row))
+                        .or_default()
+                        .push(ch);
+                    self.protect(glyph_col, row);
+                } else {
+                    self.set(x, row, ch);
+                    self.protect(x, row);
+                }
+                continue;
+            }
+            if char_width == 2 && x + 1 >= self.width {
+                break;
+            }
             self.set(x, row, ch);
             self.protect(x, row);
-            x += UnicodeWidthChar::width(ch).unwrap_or(1);
+            last_glyph = Some(x);
+            if char_width == 2 && x + 1 < self.width {
+                self.wide_continuation[row][x + 1] = true;
+                self.protect(x + 1, row);
+            }
+            x += char_width;
         }
     }
 
@@ -1601,6 +1670,9 @@ impl Grid {
             if r >= self.height || c >= self.width {
                 continue;
             }
+            if self.wide_continuation[r][c] {
+                continue;
+            }
             if self.protected[r][c] {
                 continue;
             }
@@ -1747,6 +1819,9 @@ impl Grid {
             if c >= self.width || r >= self.height {
                 continue;
             }
+            if self.wide_continuation[r][c] {
+                continue;
+            }
             if i == last {
                 self.protected[r][c] = false;
                 if self.directions[r][c] == 0 {
@@ -1808,8 +1883,17 @@ impl std::fmt::Display for Grid {
     /// Format the grid as a multi-line string, stripping trailing spaces.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = String::with_capacity(self.height * (self.width + 1));
-        for row in &self.cells {
-            let line: String = row.iter().collect();
+        for (row_idx, row) in self.cells.iter().enumerate() {
+            let mut line = String::new();
+            for (col, &ch) in row.iter().enumerate() {
+                if self.wide_continuation[row_idx][col] {
+                    continue;
+                }
+                line.push(ch);
+                if let Some(marks) = self.combining_marks.get(&(col, row_idx)) {
+                    line.push_str(marks);
+                }
+            }
             out.push_str(line.trim_end());
             out.push('\n');
         }
@@ -1878,7 +1962,35 @@ mod tests {
     fn out_of_bounds_ignored() {
         let mut g = Grid::new(3, 3);
         g.set(10, 10, 'X'); // should not panic
+        g.write_text(0, 10, "wide 界");
+        g.write_text_protected(0, 10, "wide 界");
         assert_eq!(g.get(10, 10), ' ');
+    }
+
+    #[test]
+    fn wide_continuation_is_hidden_and_released_when_its_base_is_replaced() {
+        let mut g = Grid::new(4, 1);
+        g.write_text(0, 0, "界");
+        g.set(1, 0, 'x');
+        assert_eq!(g.to_string(), "界\n");
+
+        g.set(0, 0, 'A');
+        g.set(1, 0, 'B');
+        assert_eq!(g.to_string(), "AB\n");
+    }
+
+    #[test]
+    fn combining_mark_after_wide_glyph_stays_with_its_base() {
+        let mut g = Grid::new(4, 1);
+        g.write_text(0, 0, "界\u{301}X");
+        assert_eq!(g.to_string(), "界\u{301}X\n");
+    }
+
+    #[test]
+    fn wide_glyph_is_clipped_when_only_one_column_remains() {
+        let mut g = Grid::new(1, 1);
+        g.write_text(0, 0, "界");
+        assert_eq!(g.to_string(), "");
     }
 
     #[test]

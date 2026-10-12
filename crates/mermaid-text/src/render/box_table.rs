@@ -11,15 +11,14 @@
 //!
 //! # Design invariants
 //!
-//! - All drawing is done by writing individual `char`s into a `&mut [Vec<char>]`
-//!   grid slice. The caller owns the grid and is responsible for allocating it
-//!   large enough.
+//! - Drawing uses a `&mut [Vec<char>]` grid slice with NUL continuation markers
+//!   for wide glyphs. Callers own the grid and allocate it large enough.
 //! - `put` and `put_str` are bounds-checked and silently drop out-of-bounds
 //!   writes, so callers do not need to track whether a coordinate is valid.
 //! - `pad_right` produces display-width-aware padding using [`unicode_width`].
 //! - `NAME_PAD` is the standard interior horizontal padding for all box types.
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Cells of padding inside a box on each side of content.
 ///
@@ -33,18 +32,96 @@ pub const NAME_PAD: usize = 2;
 /// Write a single character into `grid[row][col]`, silently ignoring
 /// out-of-bounds coordinates.
 pub fn put(grid: &mut [Vec<char>], row: usize, col: usize, ch: char) {
-    if let Some(line) = grid.get_mut(row)
-        && let Some(cell) = line.get_mut(col)
-    {
-        *cell = ch;
+    if let Some(line) = grid.get_mut(row) {
+        if col >= line.len() || line[col] == '\0' {
+            return;
+        }
+        if col + 1 < line.len() && line[col + 1] == '\0' {
+            line[col + 1] = ' ';
+        }
+        line[col] = ch;
     }
 }
 
-/// Write each character of `s` into consecutive cells starting at
-/// `grid[row][col]`. Out-of-bounds characters are silently dropped.
+/// Write `s` into display-width cells starting at `grid[row][col]`.
+/// Out-of-bounds glyphs are silently dropped. Use [`put_str_with_marks`] when
+/// combining marks must be retained separately from their base glyphs.
 pub fn put_str(grid: &mut [Vec<char>], row: usize, col: usize, s: &str) {
-    for (c, ch) in (col..).zip(s.chars()) {
-        put(grid, row, c, ch);
+    let Some(line) = grid.get_mut(row) else {
+        return;
+    };
+    let mut c = col;
+    for ch in s.chars() {
+        if c >= line.len() {
+            break;
+        }
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if char_width == 0 {
+            if c > col && c - 1 < line.len() && line[c - 1] != '\0' {
+                // Keep the mark in its own storage slot so the next scalar
+                // cannot replace it; terminal display width remains zero.
+                line[c] = ch;
+                c += 1;
+            }
+            continue;
+        }
+        if line[c] == '\0' {
+            c += char_width;
+            continue;
+        }
+        if c + 1 < line.len() && line[c + 1] == '\0' {
+            line[c + 1] = ' ';
+        }
+        line[c] = ch;
+        if char_width == 2 && c + 1 < line.len() {
+            line[c + 1] = '\0';
+        }
+        c += char_width;
+    }
+}
+
+/// Write text into a character grid while retaining combining marks beside
+/// their base glyph. The map is keyed by `(row, column)` of that base glyph.
+pub fn put_str_with_marks(
+    grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
+    row: usize,
+    col: usize,
+    s: &str,
+) {
+    let Some(line) = grid.get_mut(row) else {
+        return;
+    };
+    let mut c = col;
+    let mut last_glyph = None;
+    for ch in s.chars() {
+        if c >= line.len() {
+            break;
+        }
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if char_width == 0 {
+            if let Some(glyph_col) = last_glyph {
+                marks.entry((row, glyph_col)).or_default().push(ch);
+            }
+            continue;
+        }
+        if char_width == 2 && c + 1 >= line.len() {
+            break;
+        }
+        if line[c] == '\0' {
+            c += char_width;
+            continue;
+        }
+        if c + 1 < line.len() && line[c + 1] == '\0' {
+            line[c + 1] = ' ';
+        }
+        line[c] = ch;
+        marks.remove(&(row, c));
+        last_glyph = Some(c);
+        if char_width == 2 && c + 1 < line.len() {
+            line[c + 1] = '\0';
+        }
+        c += char_width;
     }
 }
 
@@ -70,9 +147,26 @@ pub fn pad_right(s: &str, width: usize) -> String {
 /// Serialise a `char` grid to a `String`, trimming trailing whitespace from
 /// each row and trailing blank lines from the end.
 pub fn grid_to_string(grid: &[Vec<char>]) -> String {
+    grid_to_string_with_marks(grid, &std::collections::HashMap::new())
+}
+
+/// Serialise a grid and append any combining marks to their base glyphs.
+pub fn grid_to_string_with_marks(
+    grid: &[Vec<char>],
+    marks: &std::collections::HashMap<(usize, usize), String>,
+) -> String {
     let mut out = String::with_capacity(grid.iter().map(|r| r.len() + 1).sum());
-    for row in grid {
-        let line: String = row.iter().collect();
+    for (row_idx, row) in grid.iter().enumerate() {
+        let mut line = String::new();
+        for (col, &ch) in row.iter().enumerate() {
+            if ch == '\0' {
+                continue;
+            }
+            line.push(ch);
+            if let Some(suffix) = marks.get(&(row_idx, col)) {
+                line.push_str(suffix);
+            }
+        }
         out.push_str(line.trim_end());
         out.push('\n');
     }

@@ -117,6 +117,7 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
 
     // cell(row, col) → char; initialise to space.
     let mut grid: Vec<Vec<char>> = vec![vec![' '; canvas_width]; rows + 2]; // +2 for arrows
+    let mut combining_marks = std::collections::HashMap::new();
 
     // Draw y-axis (vertical bar + top/bottom arrows).
     // Row 0 = top arrow `^`, row 1..rows = body, row rows+1 = bottom arrow `v`.
@@ -152,19 +153,45 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
 
     if let Some(q1) = &diag.quadrants.q1 {
         // Top-right: place starting at center_col+2
-        place_text(&mut grid, label_row_top, center_col + 2, q1, canvas_width);
+        place_text(
+            &mut grid,
+            &mut combining_marks,
+            label_row_top,
+            center_col + 2,
+            q1,
+            canvas_width,
+        );
     }
     if let Some(q2) = &diag.quadrants.q2 {
         // Top-left: right-align before center_col-2
-        place_text_right_aligned(&mut grid, label_row_top, center_col.saturating_sub(2), q2);
+        place_text_right_aligned(
+            &mut grid,
+            &mut combining_marks,
+            label_row_top,
+            center_col.saturating_sub(2),
+            q2,
+        );
     }
     if let Some(q3) = &diag.quadrants.q3 {
         // Bottom-left: right-align before center_col-2
-        place_text_right_aligned(&mut grid, label_row_bot, center_col.saturating_sub(2), q3);
+        place_text_right_aligned(
+            &mut grid,
+            &mut combining_marks,
+            label_row_bot,
+            center_col.saturating_sub(2),
+            q3,
+        );
     }
     if let Some(q4) = &diag.quadrants.q4 {
         // Bottom-right: place starting at center_col+2
-        place_text(&mut grid, label_row_bot, center_col + 2, q4, canvas_width);
+        place_text(
+            &mut grid,
+            &mut combining_marks,
+            label_row_bot,
+            center_col + 2,
+            q4,
+            canvas_width,
+        );
     }
 
     // Place data points.
@@ -231,28 +258,43 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
 
         // Build the label string: " Name (x.xx,y.yy)"
         let label = format!(" {} ({:.2},{:.2})", pt.name, pt.x, pt.y);
-        let label_width = label.chars().count(); // ASCII labels — char count == display width
+        let label_width = UnicodeWidthStr::width(label.as_str());
         let right_start = col + 1;
         let right_fits = right_start + label_width <= canvas_width;
 
         if right_fits && region_is_clear(&grid, grid_row, right_start, label_width) {
             // (a) Full label fits on the right and the region is unoccupied.
-            place_text(&mut grid, grid_row, right_start, &label, canvas_width);
+            place_text(
+                &mut grid,
+                &mut combining_marks,
+                grid_row,
+                right_start,
+                &label,
+                canvas_width,
+            );
         } else if label_width < col
             && region_is_clear(&grid, grid_row, col - label_width, label_width)
         {
             // (b) Right overflows or is occupied; left region is clear — flip.
             let left_start = col - label_width;
-            place_text(&mut grid, grid_row, left_start, &label, canvas_width);
+            place_text(
+                &mut grid,
+                &mut combining_marks,
+                grid_row,
+                left_start,
+                &label,
+                canvas_width,
+            );
         } else {
             // (c) Neither side works cleanly.  Place on the right with ellipsis
             // truncation so at least a partial label is visible.
             let budget = canvas_width.saturating_sub(right_start);
             if budget > 1 {
-                let truncated: String = label.chars().take(budget - 1).collect();
+                let truncated = truncate_to_width(&label, budget - 1);
                 let with_ellipsis = format!("{truncated}\u{2026}");
                 place_text(
                     &mut grid,
+                    &mut combining_marks,
                     grid_row,
                     right_start,
                     &with_ellipsis,
@@ -269,13 +311,21 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
     if let Some(x_ax) = &diag.x_axis {
         if !x_ax.low.is_empty() {
             // Place at the very left edge; the label sits on top of the dashes.
-            place_text(&mut grid, x_axis_grid_row, 0, &x_ax.low, canvas_width);
+            place_text(
+                &mut grid,
+                &mut combining_marks,
+                x_axis_grid_row,
+                0,
+                &x_ax.low,
+                canvas_width,
+            );
         }
         if !x_ax.high.is_empty() {
             let hw = UnicodeWidthStr::width(x_ax.high.as_str());
             let start_col = canvas_width.saturating_sub(hw);
             place_text(
                 &mut grid,
+                &mut combining_marks,
                 x_axis_grid_row,
                 start_col,
                 &x_ax.high,
@@ -285,8 +335,17 @@ pub fn render(diag: &QuadrantChart, max_width: Option<usize>) -> String {
     }
 
     // Emit all grid rows.
-    for row in grid.iter().take(total_grid_rows) {
-        let row_str: String = row.iter().collect();
+    for (row_idx, row) in grid.iter().enumerate().take(total_grid_rows) {
+        let mut row_str = String::new();
+        for (col, &ch) in row.iter().enumerate() {
+            if ch == '\0' {
+                continue;
+            }
+            row_str.push(ch);
+            if let Some(suffix) = combining_marks.get(&(row_idx, col)) {
+                row_str.push_str(suffix);
+            }
+        }
         // Trim trailing spaces.
         let trimmed = row_str.trim_end();
         out.push_str(trimmed);
@@ -402,38 +461,86 @@ fn region_is_clear(grid: &[Vec<char>], row: usize, start_col: usize, len: usize)
 
 /// Place `text` into the grid starting at `(row, start_col)`.
 ///
-/// Characters that would extend past `max_col` are silently dropped.
-/// This does not respect Unicode combining characters or double-wide glyphs
-/// in the column counting (Phase 1 limitation — nearly all point labels are ASCII).
-fn place_text(grid: &mut [Vec<char>], row: usize, start_col: usize, text: &str, max_col: usize) {
+/// Characters that would extend past `max_col` are silently dropped. Wide
+/// glyphs reserve a continuation cell so later chart drawing cannot overwrite
+/// their second terminal column.
+fn place_text(
+    grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
+    row: usize,
+    start_col: usize,
+    text: &str,
+    max_col: usize,
+) {
     let row_len = grid[row].len();
     let limit = max_col.min(row_len);
-    for (col, ch) in (start_col..).zip(text.chars()) {
+    let mut col = start_col;
+    for ch in text.chars() {
         if col >= limit {
             break;
         }
+        let char_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+        if char_width == 0 {
+            if col > start_col {
+                let glyph_col = if grid[row][col - 1] == '\0' {
+                    col.saturating_sub(2)
+                } else {
+                    col - 1
+                };
+                marks.entry((row, glyph_col)).or_default().push(ch);
+            }
+            continue;
+        }
+        if char_width == 2 && col + 1 >= limit {
+            break;
+        }
+        if grid[row][col] == '\0' {
+            col += char_width;
+            continue;
+        }
+        if col + 1 < limit && grid[row][col + 1] == '\0' {
+            grid[row][col + 1] = ' ';
+        }
         grid[row][col] = ch;
+        marks.remove(&(row, col));
+        if char_width == 2 && col + 1 < limit {
+            grid[row][col + 1] = '\0';
+        }
+        col += char_width;
     }
 }
 
 /// Place `text` right-aligned so its last character is at `end_col`.
 ///
 /// Characters that start before column 0 are silently dropped.
-fn place_text_right_aligned(grid: &mut [Vec<char>], row: usize, end_col: usize, text: &str) {
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
+fn place_text_right_aligned(
+    grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
+    row: usize,
+    end_col: usize,
+    text: &str,
+) {
+    let len = UnicodeWidthStr::width(text);
     if len == 0 {
         return;
     }
     // Start position (may underflow to 0 if label is wider than end_col).
     let start_col = end_col.saturating_sub(len);
-    let row_len = grid[row].len();
-    for (i, &ch) in chars.iter().enumerate() {
-        let col = start_col + i;
-        if col < row_len {
-            grid[row][col] = ch;
+    place_text(grid, marks, row, start_col, text, grid[row].len());
+}
+
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let char_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+        if used + char_width > width {
+            break;
         }
+        out.push(ch);
+        used += char_width;
     }
+    out
 }
 
 // ---------------------------------------------------------------------------

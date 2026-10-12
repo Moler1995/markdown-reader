@@ -22,7 +22,7 @@
 //! assert!(out.contains('┆'));
 //! ```
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::sequence::{
     AutonumberState, Block, BlockKind, MessageStyle, NoteAnchor, ParticipantGroup, SequenceDiagram,
@@ -88,6 +88,7 @@ const ACTIVATION_BAR_WIDTH: usize = 2;
 struct Canvas {
     /// Stored in row-major order: `grid[row][col]`.
     grid: Vec<Vec<char>>,
+    combining_marks: std::collections::HashMap<(usize, usize), String>,
     width: usize,
     height: usize,
 }
@@ -96,6 +97,7 @@ impl Canvas {
     fn new(width: usize, height: usize) -> Self {
         Self {
             grid: vec![vec![' '; width]; height],
+            combining_marks: std::collections::HashMap::new(),
             width,
             height,
         }
@@ -104,22 +106,48 @@ impl Canvas {
     /// Write a single character at `(row, col)`, silently clamping to bounds.
     fn put(&mut self, row: usize, col: usize, ch: char) {
         if row < self.height && col < self.width {
+            if self.grid[row][col] == '\0' {
+                return;
+            }
+            if col + 1 < self.width && self.grid[row][col + 1] == '\0' {
+                self.grid[row][col + 1] = ' ';
+            }
             self.grid[row][col] = ch;
+            self.combining_marks.remove(&(row, col));
         }
     }
 
     /// Write a string starting at `(row, col)`.  Characters that would exceed
     /// the canvas width are silently dropped.
     fn put_str(&mut self, row: usize, col: usize, s: &str) {
+        if row >= self.height {
+            return;
+        }
         let mut c = col;
+        let mut last_glyph = None;
         for ch in s.chars() {
             if c >= self.width {
                 break;
             }
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+            if char_width == 0 {
+                if let Some(glyph_col) = last_glyph {
+                    self.combining_marks
+                        .entry((row, glyph_col))
+                        .or_default()
+                        .push(ch);
+                }
+                continue;
+            }
+            if char_width == 2 && c + 1 >= self.width {
+                break;
+            }
             self.put(row, c, ch);
-            // Advance by display width so wide (CJK) characters don't clobber
-            // the next cell — for ASCII this is always 1.
-            c += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+            last_glyph = Some(c);
+            if char_width == 2 && c + 1 < self.width {
+                self.grid[row][c + 1] = '\0';
+            }
+            c += char_width;
         }
     }
 
@@ -127,8 +155,18 @@ impl Canvas {
     fn into_string(self) -> String {
         self.grid
             .iter()
-            .map(|row| {
-                let s: String = row.iter().collect();
+            .enumerate()
+            .map(|(row_idx, row)| {
+                let mut s = String::new();
+                for (col, &ch) in row.iter().enumerate() {
+                    if ch == '\0' {
+                        continue;
+                    }
+                    s.push(ch);
+                    if let Some(marks) = self.combining_marks.get(&(row_idx, col)) {
+                        s.push_str(marks);
+                    }
+                }
                 // Trim trailing spaces for clean output.
                 s.trim_end().to_string()
             })
@@ -1395,6 +1433,20 @@ fn draw_block_frame(
 mod tests {
     use super::*;
     use crate::parser::sequence::parse;
+
+    #[test]
+    fn canvas_serializes_wide_glyphs_without_continuation_cells() {
+        let mut canvas = Canvas::new(4, 1);
+        canvas.put_str(0, 0, "界\u{301}X");
+        assert_eq!(canvas.into_string(), "界\u{301}X");
+    }
+
+    #[test]
+    fn canvas_clips_wide_glyphs_at_the_right_edge() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.put_str(0, 0, "界");
+        assert_eq!(canvas.into_string(), "");
+    }
 
     #[test]
     fn render_produces_participant_boxes() {

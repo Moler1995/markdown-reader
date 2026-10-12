@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Mermaid wide-character cell alignment (#52)
+
+CJK and fullwidth labels now occupy the same display width in Mermaid grid,
+sequence, table, and quadrant-chart renderers, keeping labels and borders
+aligned. Reported by @worldnine in #52.
+
 All notable changes to `markdown-tui-explorer` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

@@ -39,7 +39,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::class::{Class, ClassDiagram, Member, RelKind, Relation};
 use crate::layout::layered::{LayoutConfig, LayoutResult, layout as layered_layout};
-use crate::render::box_table::{NAME_PAD, grid_to_string, put, put_str};
+use crate::render::box_table::{NAME_PAD, grid_to_string_with_marks, put, put_str_with_marks};
 use crate::types::{Direction, Edge, EdgeEndpoint, EdgeStyle, Graph, Node, NodeShape};
 
 // ---------------------------------------------------------------------------
@@ -119,13 +119,14 @@ pub fn render(chart: &ClassDiagram, _max_width: Option<usize>) -> String {
         + BOX_GAP;
 
     let mut grid: Vec<Vec<char>> = vec![vec![' '; canvas_cols]; canvas_rows];
+    let mut combining_marks = std::collections::HashMap::new();
 
     // 5. Paint class boxes.
     for (class, geo) in chart.classes.iter().zip(boxes.iter()) {
         let Some(&(col, row)) = positions.get(&class.name) else {
             continue;
         };
-        paint_class_box(&mut grid, row, col, class, geo);
+        paint_class_box(&mut grid, &mut combining_marks, row, col, class, geo);
     }
 
     // 6. Paint relations as Manhattan polylines.
@@ -141,10 +142,20 @@ pub fn render(chart: &ClassDiagram, _max_width: Option<usize>) -> String {
         let (Some(fg), Some(tg)) = (from_geo, to_geo) else {
             continue;
         };
-        paint_relation(&mut grid, from_col, from_row, fg, to_col, to_row, tg, rel);
+        paint_relation(
+            &mut grid,
+            &mut combining_marks,
+            from_col,
+            from_row,
+            fg,
+            to_col,
+            to_row,
+            tg,
+            rel,
+        );
     }
 
-    grid_to_string(&grid)
+    grid_to_string_with_marks(&grid, &combining_marks)
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +278,7 @@ fn synthesise_graph(chart: &ClassDiagram, boxes: &[BoxGeometry]) -> Graph {
 /// Paint a class box onto the character grid at position `(col, row)`.
 fn paint_class_box(
     grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
     row: usize,
     col: usize,
     class: &Class,
@@ -291,7 +303,7 @@ fn paint_class_box(
         let lw = label.width();
         let offset = (interior_w.saturating_sub(lw)) / 2;
         put(grid, cur_row, left, '│');
-        put_str(grid, cur_row, left + 1 + offset, &label);
+        put_str_with_marks(grid, marks, cur_row, left + 1 + offset, &label);
         put(grid, cur_row, right, '│');
         cur_row += 1;
     }
@@ -301,7 +313,7 @@ fn paint_class_box(
         let name_w = class.name.width();
         let offset = (interior_w.saturating_sub(name_w)) / 2;
         put(grid, cur_row, left, '│');
-        put_str(grid, cur_row, left + 1 + offset, &class.name);
+        put_str_with_marks(grid, marks, cur_row, left + 1 + offset, &class.name);
         put(grid, cur_row, right, '│');
         cur_row += 1;
     }
@@ -328,7 +340,7 @@ fn paint_class_box(
     for member in &class.members {
         let text = format_member(member);
         put(grid, cur_row, left, '│');
-        put_str(grid, cur_row, left + 1 + INTERIOR_PAD, &text);
+        put_str_with_marks(grid, marks, cur_row, left + 1 + INTERIOR_PAD, &text);
         put(grid, cur_row, right, '│');
         cur_row += 1;
     }
@@ -390,6 +402,7 @@ fn format_member(m: &Member) -> String {
 #[allow(clippy::too_many_arguments)]
 fn paint_relation(
     grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
     from_col: usize,
     from_row: usize,
     from_geo: &BoxGeometry,
@@ -446,7 +459,7 @@ fn paint_relation(
         let mid_col = (from_cx + to_cx) / 2;
         let mid_row = (from_row + from_geo.box_height / 2 + to_row + to_geo.box_height / 2) / 2;
         let label_row = mid_row.saturating_sub(1);
-        put_str(grid, label_row, mid_col, label);
+        put_str_with_marks(grid, marks, label_row, mid_col, label);
     }
 }
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — wide Unicode display width (#52)
+
+CJK and fullwidth labels occupy two terminal columns in shared-grid, sequence,
+box-table, and quadrant-chart renderers. Continuation cells no longer leak
+spaces or get overwritten by borders and fills; display-width placement stays
+aligned.
+
 All notable changes to `mermaid-text` are documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
