@@ -1,16 +1,19 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed — wide Unicode display width (#52)
-
-CJK and fullwidth labels occupy two terminal columns in shared-grid, sequence,
-box-table, and quadrant-chart renderers. Continuation cells no longer leak
-spaces or get overwritten by borders and fills; display-width placement stays
-aligned.
-
 All notable changes to `mermaid-text` are documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## 0.57.4 — 2026-10-12 — Wide text and relationship geometry
+
+### Fixed
+
+- CJK/fullwidth labels occupy consistent terminal cells across shared grids,
+  sequence canvases, class/ER boxes and quadrant charts. Continuation cells
+  no longer leak spaces or border/fill glyphs; combining marks stay attached
+  to their base glyph. Reported by @worldnine in #52.
+- State-note links preserve the actual final route corner, including left
+  notes. Nested sequence activations render continuous, distinct bars with
+  labels and arrows outside their reserved lanes (#41).
 
 ## 0.57.3 — 2026-10-07 — classDiagram UTF-8 keyword probe (#50)
 
@@ -31,14 +34,6 @@ This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   without slicing inside a character. Malformed class-method parentheses return
   a descriptive parse error instead of constructing a reversed slice. These
   pre-existing variants were discovered and reproduced during the #51 review.
-
-## Unreleased
-
-### Fixed — note links and nested activation geometry (#41)
-
-- Left state-note connectors render continuously to their annotated state.
-- Nested sequence activation bars remain distinct and clear of message labels
-  in Unicode and ASCII renderings.
 
 ## 0.57.2 — 2026-08-31 — Delimiter-aware flowchart labels (#40)
 

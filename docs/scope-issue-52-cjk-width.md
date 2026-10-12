@@ -20,7 +20,8 @@
 
 ## Status
 
-Implementation in progress.
+Initial implementation complete; integration review boundary findings are
+being resolved in the combined PR.
 
 ### Reproduction evidence (before implementation)
 

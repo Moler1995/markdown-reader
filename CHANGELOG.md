@@ -1,13 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed — Mermaid wide-character cell alignment (#52)
-
-CJK and fullwidth labels now occupy the same display width in Mermaid grid,
-sequence, table, and quadrant-chart renderers, keeping labels and borders
-aligned. Reported by @worldnine in #52.
-
 All notable changes to `markdown-tui-explorer` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -17,32 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Bundled mermaid-text classDiagram parsing no longer panics on non-ASCII
-  class names or rejected member shorthand (#50). Original fix and
-  regression tests by @worldnine in #51; maintainer review adds exact
-  diagnostic and parsed relationship assertions. The same review also fixes
-  Unicode whitespace panics in class methods and ER relationships, plus a
-  malformed-parenthesis class-method panic.
-- Update the Rustls lockfile to 0.23.45 (and rustls-webpki to 0.103.15)
-  to resolve RUSTSEC-2026-0285 found by the local advisory gate.
+- Mermaid CJK/fullwidth labels keep their terminal-cell width and aligned
+  borders across grid, sequence, class/ER tables and quadrant charts (#52).
+  Combining marks stay attached to their labels. Reported by @worldnine.
+- State-note links preserve their final route corner. Nested sequence
+  activation bars use distinct, continuous lanes with clear labels (#41).
+- Non-ASCII class names and Unicode whitespace in class methods/ER
+  relationships no longer panic; malformed class-method parentheses return
+  a parse error (#50). Original keyword fix and regressions by @worldnine
+  in #51; maintainer review also pins exact AST and diagnostic assertions.
+- Update Rustls to 0.23.45 and rustls-webpki to 0.103.15 in the lockfile,
+  resolving RUSTSEC-2026-0285 found by the local advisory gate.
 
-## Unreleased
+### Changed
 
-### Fixed — Mermaid note and activation geometry (#41)
-
-State-diagram notes now connect continuously to their annotated state, and
-nested sequence activation bars retain distinct spans without covering message
-labels in Unicode and ASCII output.
-
-## Unreleased
-
-### Changed — WezTerm display math routing (#48)
-
-WezTerm now selects the iTerm2 image protocol when its Kitty capability probe
-succeeds, including WSL setups that expose `TERM_PROGRAM` without
-`WEZTERM_EXECUTABLE`. The Unicode fallback formats `\\tag{1}` as `(1)`.
-Protocol routing is covered by a simulated picker regression; rendering in a
-WezTerm GUI remains to be verified on the reported setup.
+- Recognized WezTerm sessions prefer the iTerm2 image protocol after a
+  successful terminal query, including `TERM_PROGRAM` detection in WSL.
+  Unicode math fallback renders `\tag{1}` as `(1)` (#48). The equation raster
+  and protocol routing are tested; the reported WezTerm/WSL display still
+  requires verification in that terminal. No release has been published.
 
 ## [1.35.1] — 2026-08-31
 
