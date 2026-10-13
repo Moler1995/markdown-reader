@@ -22,8 +22,11 @@
 //! assert!(out.contains('┆'));
 //! ```
 
+use std::{borrow::Cow, collections::BTreeMap};
+
 use unicode_width::UnicodeWidthStr;
 
+use crate::render::box_table::{grid_to_string_with_marks, put_cell, put_str_with_marks};
 use crate::sequence::{
     AutonumberState, Block, BlockKind, MessageStyle, NoteAnchor, ParticipantGroup, SequenceDiagram,
 };
@@ -80,6 +83,124 @@ const LIFELINE: char = '┆';
 const ACTIVATION_BAR: char = '█';
 const ACTIVATION_BAR_WIDTH: usize = 2;
 
+/// Parsed activations close in LIFO order. Equal message ranges still occupy
+/// distinct lanes: the earlier closed span is the inner one.
+fn activation_depth(diag: &SequenceDiagram, index: usize) -> usize {
+    let act = &diag.activations[index];
+    diag.activations
+        .iter()
+        .enumerate()
+        .filter(|&(other_index, other)| {
+            other_index != index
+                && other.participant == act.participant
+                && other.start_message <= act.start_message
+                && other.end_message >= act.end_message
+                && ((other.start_message, other.end_message)
+                    != (act.start_message, act.end_message)
+                    || other_index > index)
+        })
+        .count()
+}
+
+fn activation_widths(diag: &SequenceDiagram, depths: &[usize]) -> Vec<usize> {
+    let mut widths = vec![0; diag.participants.len()];
+    for (index, act) in diag.activations.iter().enumerate() {
+        if let Some(pi) = diag.participant_index(&act.participant) {
+            widths[pi] =
+                widths[pi].max(depths[index] * (ACTIVATION_BAR_WIDTH + 1) + ACTIVATION_BAR_WIDTH);
+        }
+    }
+    widths
+}
+
+/// Sparse width changes at message boundaries; endpoint lookup is logarithmic
+/// in this participant's activation events rather than scanning every span.
+fn active_lane_index(diag: &SequenceDiagram, depths: &[usize]) -> Vec<Vec<(usize, usize)>> {
+    let mut events = vec![Vec::new(); diag.participants.len()];
+    for (index, act) in diag.activations.iter().enumerate() {
+        if act.start_message > act.end_message || act.end_message >= diag.messages.len() {
+            continue;
+        }
+        if let Some(pi) = diag.participant_index(&act.participant) {
+            events[pi].push((act.start_message, depths[index], true));
+            events[pi].push((act.end_message + 1, depths[index], false));
+        }
+    }
+    events
+        .into_iter()
+        .map(|mut events| {
+            events.sort_unstable();
+            let mut active = BTreeMap::<usize, usize>::new();
+            let mut changes = Vec::new();
+            for (message, depth, opening) in events {
+                if opening {
+                    *active.entry(depth).or_default() += 1;
+                } else if let Some(count) = active.get_mut(&depth) {
+                    *count -= 1;
+                    if *count == 0 {
+                        active.remove(&depth);
+                    }
+                }
+                let width = active.last_key_value().map_or(0, |(&depth, _)| {
+                    depth * (ACTIVATION_BAR_WIDTH + 1) + ACTIVATION_BAR_WIDTH
+                });
+                if changes.last().is_some_and(|&(at, _)| at == message) {
+                    changes.pop();
+                }
+                changes.push((message, width));
+            }
+            changes
+        })
+        .collect()
+}
+
+fn active_width(changes: &[(usize, usize)], message: usize) -> usize {
+    let end = changes.partition_point(|&(at, _)| at <= message);
+    end.checked_sub(1).map_or(0, |index| changes[index].1)
+}
+
+/// Right edge of the active lanes at a message, or the ordinary lifeline.
+fn message_anchor(layout: &ParticipantLayout, width: usize, right: bool) -> usize {
+    if width == 0 {
+        layout.center
+    } else if right {
+        layout.center + width
+    } else {
+        layout.center.saturating_sub(1)
+    }
+}
+
+/// Compute the exact displayed labels once for both layout and painting.
+fn message_labels(diag: &SequenceDiagram) -> Vec<Cow<'_, str>> {
+    let mut state = AutonumberState::Off;
+    let mut cursor = 0;
+    diag.messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            while cursor < diag.autonumber_changes.len()
+                && diag.autonumber_changes[cursor].at_message <= index
+            {
+                state = diag.autonumber_changes[cursor].state;
+                cursor += 1;
+            }
+            match state {
+                AutonumberState::Off => Cow::Borrowed(message.text.as_str()),
+                AutonumberState::On { next_value } => {
+                    state = AutonumberState::On {
+                        next_value: next_value.saturating_add(1),
+                    };
+                    Cow::Owned(if message.text.is_empty() {
+                        format!("[{next_value}]")
+                    } else {
+                        format!("[{next_value}] {}", message.text)
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Canvas
 // ---------------------------------------------------------------------------
@@ -88,6 +209,7 @@ const ACTIVATION_BAR_WIDTH: usize = 2;
 struct Canvas {
     /// Stored in row-major order: `grid[row][col]`.
     grid: Vec<Vec<char>>,
+    combining_marks: std::collections::HashMap<(usize, usize), String>,
     width: usize,
     height: usize,
 }
@@ -96,6 +218,7 @@ impl Canvas {
     fn new(width: usize, height: usize) -> Self {
         Self {
             grid: vec![vec![' '; width]; height],
+            combining_marks: std::collections::HashMap::new(),
             width,
             height,
         }
@@ -103,37 +226,20 @@ impl Canvas {
 
     /// Write a single character at `(row, col)`, silently clamping to bounds.
     fn put(&mut self, row: usize, col: usize, ch: char) {
-        if row < self.height && col < self.width {
-            self.grid[row][col] = ch;
+        if row < self.height && col < self.width && self.grid[row][col] != '\0' {
+            put_cell(&mut self.grid, row, col, ch);
+            self.combining_marks.remove(&(row, col));
         }
     }
 
-    /// Write a string starting at `(row, col)`.  Characters that would exceed
-    /// the canvas width are silently dropped.
+    /// Write text in terminal columns using the shared continuation/mark rules.
     fn put_str(&mut self, row: usize, col: usize, s: &str) {
-        let mut c = col;
-        for ch in s.chars() {
-            if c >= self.width {
-                break;
-            }
-            self.put(row, c, ch);
-            // Advance by display width so wide (CJK) characters don't clobber
-            // the next cell — for ASCII this is always 1.
-            c += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-        }
+        put_str_with_marks(&mut self.grid, &mut self.combining_marks, row, col, s);
     }
 
-    /// Render the grid to a `String` with trailing-space trimming per row.
+    /// Render the grid with trailing-space and trailing-blank-row trimming.
     fn into_string(self) -> String {
-        self.grid
-            .iter()
-            .map(|row| {
-                let s: String = row.iter().collect();
-                // Trim trailing spaces for clean output.
-                s.trim_end().to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        grid_to_string_with_marks(&self.grid, &self.combining_marks)
     }
 }
 
@@ -156,7 +262,11 @@ struct ParticipantLayout {
 /// 2. The gap between adjacent centres is at least `MIN_GAP`.
 /// 3. The gap is widened further when a message label crossing that gap
 ///    would not otherwise fit.
-fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
+fn compute_layout(
+    diag: &SequenceDiagram,
+    lane_widths: &[usize],
+    labels: &[Cow<'_, str>],
+) -> Vec<ParticipantLayout> {
     let n = diag.participants.len();
     if n == 0 {
         return Vec::new();
@@ -177,7 +287,7 @@ fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
     // gap_mins[i] is the minimum distance between centres of participant i and i+1.
     let mut gap_mins = vec![MIN_GAP; n.saturating_sub(1)];
 
-    for msg in &diag.messages {
+    for (msg, label) in diag.messages.iter().zip(labels) {
         let Some(si) = diag.participant_index(&msg.from) else {
             continue;
         };
@@ -192,8 +302,14 @@ fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
         let spans = hi - lo;
         // Label needs `label_width + LABEL_PADDING` cells of clearance along
         // its arrow; divide across the spans the arrow crosses.
-        let label_need = msg.text.width() + LABEL_PADDING;
-        let per_gap = label_need.div_ceil(spans);
+        let label_need = label.width() + LABEL_PADDING;
+        // With active lanes, keep a label in the first gap so an intervening
+        // participant's continuous bar cannot overwrite it.
+        let per_gap = if diag.activations.is_empty() {
+            label_need.div_ceil(spans)
+        } else {
+            label_need
+        };
         for slot in gap_mins.iter_mut().take(hi).skip(lo) {
             *slot = (*slot).max(per_gap);
         }
@@ -214,7 +330,11 @@ fn compute_layout(diag: &SequenceDiagram) -> Vec<ParticipantLayout> {
         let center = if i == 0 {
             left_margin
         } else {
-            prev_center + box_widths[i - 1] / 2 + gap_mins[i - 1] + box_widths[i] / 2
+            prev_center
+                + box_widths[i - 1] / 2
+                + gap_mins[i - 1]
+                + box_widths[i] / 2
+                + lane_widths[i - 1]
         };
         layouts.push(ParticipantLayout {
             center,
@@ -340,6 +460,7 @@ fn note_columns(
     layouts: &[ParticipantLayout],
     diag: &SequenceDiagram,
     text_w: usize,
+    lane_widths: &[usize],
 ) -> Option<(usize, usize)> {
     // Box width = text + 2 cells padding each side + 2 borders.
     let box_w = text_w + 4;
@@ -352,7 +473,7 @@ fn note_columns(
         }
         NoteAnchor::RightOf(id) => {
             let i = diag.participant_index(id)?;
-            let left = layouts[i].center + 2;
+            let left = layouts[i].center + lane_widths[i] + 2;
             Some((left, left + box_w - 1))
         }
         NoteAnchor::Over(id) => {
@@ -660,7 +781,15 @@ pub fn render(diag: &SequenceDiagram) -> String {
         return String::new();
     }
 
-    let layouts = compute_layout(diag);
+    // Nesting depth is invariant across messages; compute it once instead of
+    // repeating the containment scan for every endpoint.
+    let depths: Vec<_> = (0..diag.activations.len())
+        .map(|i| activation_depth(diag, i))
+        .collect();
+    let lane_widths = activation_widths(diag, &depths);
+    let active_lanes = active_lane_index(diag, &depths);
+    let labels = message_labels(diag);
+    let layouts = compute_layout(diag, &lane_widths, &labels);
 
     // Determine canvas dimensions.
     // Header: rows 0-2 (BOX_HEIGHT = 3).
@@ -739,14 +868,16 @@ pub fn render(diag: &SequenceDiagram) -> String {
     let self_msg_extra = diag
         .messages
         .iter()
-        .filter(|m| {
+        .zip(&labels)
+        .filter(|(m, _)| {
             diag.participant_index(&m.from) == diag.participant_index(&m.to)
                 && diag.participant_index(&m.from) == Some(n - 1)
         })
-        .map(|m| m.text.width() + 6)
+        .map(|(_, label)| label.width() + 6)
         .max()
         .unwrap_or(0);
-    let participant_width = last.center + last.box_width / 2 + 2 + self_msg_extra;
+    let participant_width =
+        last.center + last.box_width / 2 + 2 + self_msg_extra + lane_widths[n - 1];
 
     // Widen the canvas when a note's wrapped text + box overhead would exceed
     // the participant span. This handles unbreakable words (a word wider than
@@ -758,7 +889,7 @@ pub fn render(diag: &SequenceDiagram) -> String {
         .filter_map(|(note, wrapped)| {
             let text_w = max_line_width(wrapped);
             // box_w = text_w + 4 (border + padding on each side)
-            let (_l, r) = note_columns(&note.anchor, &layouts, diag, text_w)?;
+            let (_l, r) = note_columns(&note.anchor, &layouts, diag, text_w, &lane_widths)?;
             // right edge of the note box + 1 margin
             Some(r + 2)
         })
@@ -818,15 +949,13 @@ pub fn render(diag: &SequenceDiagram) -> String {
     // top leg and a bottom leg — placing the next message's label on
     // `row+1` would overlap the self-loop's bottom leg.
     let mut arrow_row = header_top + BOX_HEIGHT + 1;
-    let mut autonumber = AutonumberState::Off;
-    let mut autonumber_cursor = 0usize;
 
     // Captured arrow row for each message, indexed by message position.
     // Used by the activation-bar overlay pass to translate
     // `Activation::start_message` / `end_message` (message indices) into
     // canvas rows. For self-messages we store the top-leg row so the bar
     // naturally covers both legs.
-    let mut message_arrow_rows: Vec<usize> = Vec::with_capacity(num_messages);
+    let mut message_arrow_rows = vec![None; num_messages];
 
     // Block frame events to insert at each message-index boundary. At
     // boundary `B`:
@@ -887,7 +1016,8 @@ pub fn render(diag: &SequenceDiagram) -> String {
     // Helper closure: render any notes whose `after_message` matches
     // `at`, advancing `arrow_row` by each note's height. Uses the
     // pre-computed wrapped text so drawing and height accounting agree.
-    let render_notes_at = |canvas: &mut Canvas, arrow_row: &mut usize, at: usize| {
+    let mut note_placements = Vec::new();
+    let mut render_notes_at = |canvas: &mut Canvas, arrow_row: &mut usize, at: usize| {
         for (note, wrapped) in diag
             .notes
             .iter()
@@ -895,7 +1025,8 @@ pub fn render(diag: &SequenceDiagram) -> String {
             .filter(|(n, _)| n.after_message == at)
         {
             let text_w = max_line_width(wrapped);
-            if let Some((l, r)) = note_columns(&note.anchor, &layouts, diag, text_w) {
+            if let Some((l, r)) = note_columns(&note.anchor, &layouts, diag, text_w, &lane_widths) {
+                note_placements.push((l, r, *arrow_row, wrapped.as_str()));
                 draw_note_box(canvas, l, r, *arrow_row, wrapped);
                 *arrow_row += wrapped.lines().count().max(1) + 3;
             }
@@ -929,52 +1060,39 @@ pub fn render(diag: &SequenceDiagram) -> String {
             );
         }
 
-        // Apply any autonumber state changes whose `at_message` index
-        // is now reached. Multiple changes at the same index land in
-        // source order; the last wins.
-        while autonumber_cursor < diag.autonumber_changes.len()
-            && diag.autonumber_changes[autonumber_cursor].at_message <= msg_idx
-        {
-            autonumber = diag.autonumber_changes[autonumber_cursor].state;
-            autonumber_cursor += 1;
-        }
+        let label = labels[msg_idx].as_ref();
 
-        // Prefix the label with `[N] ` when autonumber is active.
-        // Bumps `next_value` after each numbered message.
-        let label_owned;
-        let label: &str = match autonumber {
-            AutonumberState::On { next_value } => {
-                label_owned = if msg.text.is_empty() {
-                    format!("[{next_value}]")
-                } else {
-                    format!("[{next_value}] {}", msg.text)
-                };
-                autonumber = AutonumberState::On {
-                    next_value: next_value + 1,
-                };
-                &label_owned
-            }
-            AutonumberState::Off => &msg.text,
-        };
-
-        let Some(si) = diag.participant_index(&msg.from) else {
-            continue;
-        };
-        let Some(ti) = diag.participant_index(&msg.to) else {
+        let Some((si, ti)) = diag
+            .participant_index(&msg.from)
+            .zip(diag.participant_index(&msg.to))
+        else {
+            // Public diagrams may contain unknown IDs. Skip their arrow but
+            // retain original message indices and following annotation events.
+            render_notes_at(&mut canvas, &mut arrow_row, msg_idx + 1);
             continue;
         };
 
         // Capture the arrow row for this message before advancing.
-        message_arrow_rows.push(arrow_row);
+        message_arrow_rows[msg_idx] = Some(arrow_row);
 
         if si == ti {
-            draw_self_message(&mut canvas, layouts[si].center, arrow_row, label, msg.style);
+            let anchor =
+                message_anchor(&layouts[si], active_width(&active_lanes[si], msg_idx), true);
+            draw_self_message(&mut canvas, anchor, arrow_row, label, msg.style);
             arrow_row += SELF_MSG_ROW_H;
         } else {
             draw_message(
                 &mut canvas,
-                layouts[si].center,
-                layouts[ti].center,
+                message_anchor(
+                    &layouts[si],
+                    active_width(&active_lanes[si], msg_idx),
+                    si < ti,
+                ),
+                message_anchor(
+                    &layouts[ti],
+                    active_width(&active_lanes[ti], msg_idx),
+                    ti < si,
+                ),
                 arrow_row,
                 label,
                 msg.style,
@@ -999,74 +1117,30 @@ pub fn render(diag: &SequenceDiagram) -> String {
         &mut branch_divider_rows,
     );
 
-    // 4. Overlay activation bars on participant lifelines. Drawn last so
-    //    they sit on top of the dashed lifeline glyph but skip cells
-    //    already holding arrow / junction characters from messages.
-    //
-    //    The range starts at the *label row* of the activating message
-    //    (arrow_row - 1) so single-message activations still produce a
-    //    visible bar even when the arrow row itself is overwritten by
-    //    arrow chars.
-    //
-    //    Nesting: when two activations on the same participant overlap in row
-    //    range, the inner bar is drawn one step to the right of the outer bar
-    //    (offset = ACTIVATION_BAR_WIDTH + 1 per nesting level) so the two
-    //    filled rectangles appear side-by-side instead of on the same column.
-    //
-    //    Pre-compute (lo, hi, participant_index) for every activation so the
-    //    nesting-depth query doesn't need to repeat the row-translation work.
-    let act_ranges: Vec<(usize, usize, usize)> = diag
-        .activations
-        .iter()
-        .filter_map(|act| {
-            let pi = diag.participant_index(&act.participant)?;
-            let arrow_r0 = message_arrow_rows
-                .get(act.start_message)
-                .copied()
-                .unwrap_or(lifeline_start + 1);
-            let r1 = message_arrow_rows
-                .get(act.end_message)
-                .copied()
-                .unwrap_or_else(|| height.saturating_sub(2));
-            let r0 = arrow_r0.saturating_sub(1).max(lifeline_start);
-            let (lo, hi) = if r0 <= r1 { (r0, r1) } else { (r1, r0) };
-            Some((lo, hi, pi))
-        })
-        .collect();
-
-    for (i, act) in diag.activations.iter().enumerate() {
+    // 4. Draw continuous activation lanes. Message endpoints and labels
+    // were laid out outside these lanes, including nested and self calls.
+    for (index, act) in diag.activations.iter().enumerate() {
         let Some(pi) = diag.participant_index(&act.participant) else {
             continue;
         };
-        let cx = layouts[pi].center;
-        let (lo, hi, _) = act_ranges[i];
-        // Depth = number of other activations on this participant that STRICTLY
-        // CONTAIN this one (their row range fully encloses ours). Containment
-        // is order-independent, so the source-order vs deactivate-order of the
-        // activations vec doesn't matter: the outermost bar always anchors at
-        // the lifeline (depth=0); each nested deeper bar offsets one step right.
-        let depth = act_ranges
-            .iter()
-            .enumerate()
-            .filter(|&(j, &(other_lo, other_hi, other_pi))| {
-                j != i
-                    && other_pi == pi
-                    && other_lo <= lo
-                    && other_hi >= hi
-                    && (other_lo, other_hi) != (lo, hi)
-            })
-            .count();
-        let col_offset = depth * (ACTIVATION_BAR_WIDTH + 1);
-        for r in lo..=hi {
+        let Some(start) = message_arrow_rows.get(act.start_message).copied().flatten() else {
+            continue;
+        };
+        let Some(end) = message_arrow_rows.get(act.end_message).copied().flatten() else {
+            continue;
+        };
+        let self_tail = if diag.messages[act.end_message].from == diag.messages[act.end_message].to
+        {
+            2
+        } else {
+            0
+        };
+        let lo = start.saturating_sub(1).max(lifeline_start);
+        let hi = (end + self_tail).min(lifeline_end);
+        let col = layouts[pi].center + depths[index] * (ACTIVATION_BAR_WIDTH + 1);
+        for row in lo..=hi {
             for dx in 0..ACTIVATION_BAR_WIDTH {
-                let col = cx + col_offset + dx;
-                if col >= canvas.width {
-                    break;
-                }
-                let cell = canvas.grid[r][col];
-                if cell == LIFELINE || cell == ' ' {
-                    canvas.put(r, col, ACTIVATION_BAR);
-                }
+                canvas.put(row, col + dx, ACTIVATION_BAR);
             }
         }
     }
@@ -1089,7 +1163,13 @@ pub fn render(diag: &SequenceDiagram) -> String {
     let mut label_rows: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for (i, b) in diag.blocks.iter().enumerate() {
         // Empty block (no inner messages) — nothing to draw.
-        if b.start_message > b.end_message || message_arrow_rows.get(b.start_message).is_none() {
+        if b.start_message > b.end_message
+            || message_arrow_rows
+                .get(b.start_message)
+                .copied()
+                .flatten()
+                .is_none()
+        {
             continue;
         }
         let Some((natural_left, natural_right)) = block_column_range(b, diag, &layouts) else {
@@ -1183,6 +1263,12 @@ pub fn render(diag: &SequenceDiagram) -> String {
                 }
             }
         }
+    }
+
+    // Opaque notes keep source placement and intentionally cover intersecting
+    // lanes/frames; exposed activation cells above and below stay continuous.
+    for (left, right, row, text) in note_placements {
+        draw_note_box(&mut canvas, left, right, row, text);
     }
 
     canvas.into_string()
@@ -1395,6 +1481,68 @@ fn draw_block_frame(
 mod tests {
     use super::*;
     use crate::parser::sequence::parse;
+
+    #[test]
+    fn activation_index_retains_inclusive_nested_boundaries() {
+        let diag =
+            parse("sequenceDiagram\nA->>+B: call\nA->>+B: inner\nB-->>-A: reply\nB-->>-A: done")
+                .unwrap();
+        let depths: Vec<_> = (0..diag.activations.len())
+            .map(|index| activation_depth(&diag, index))
+            .collect();
+        let index = active_lane_index(&diag, &depths);
+        let b = diag.participant_index("B").unwrap();
+        assert_eq!(index[b], [(0, 2), (1, 5), (3, 2), (4, 0)]);
+        assert_eq!(
+            (0..5)
+                .map(|at| active_width(&index[b], at))
+                .collect::<Vec<_>>(),
+            [2, 5, 5, 2, 0]
+        );
+        assert_eq!(active_width(&index[0], 2), 0);
+    }
+
+    #[test]
+    fn canvas_preserves_combining_marks_at_the_final_display_column() {
+        for (width, text) in [(1, "e\u{301}"), (2, "界\u{301}")] {
+            let mut canvas = Canvas::new(width, 1);
+            canvas.put_str(0, 0, text);
+            assert_eq!(canvas.into_string(), text);
+        }
+    }
+
+    #[test]
+    fn canvas_blocked_wide_origin_cannot_hide_the_next_glyph() {
+        let mut canvas = Canvas::new(4, 1);
+        canvas.put_str(0, 0, "界AB");
+        canvas.put_str(0, 1, "語\u{301}");
+        assert_eq!(canvas.grid[0], ['界', '\0', 'A', 'B']);
+        assert_eq!(canvas.into_string(), "界AB");
+    }
+
+    #[test]
+    fn canvas_overlap_releases_both_columns_of_the_previous_wide_glyph() {
+        let mut canvas = Canvas::new(4, 1);
+        canvas.put_str(0, 1, "界\u{301}");
+        canvas.put_str(0, 0, "語");
+        canvas.put(0, 3, 'X');
+        assert_eq!(canvas.grid[0], ['語', '\0', ' ', 'X']);
+        assert_eq!(canvas.into_string(), "語 X");
+    }
+
+    #[test]
+    fn canvas_serializes_wide_glyphs_without_continuation_cells() {
+        let mut canvas = Canvas::new(4, 1);
+        canvas.put_str(0, 0, "界\u{301}X");
+        assert_eq!(canvas.into_string(), "界\u{301}X");
+    }
+
+    #[test]
+    fn canvas_clips_wide_glyphs_at_the_right_edge() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.put_str(0, 0, "界");
+        assert_eq!(canvas.into_string(), "");
+    }
 
     #[test]
     fn render_produces_participant_boxes() {

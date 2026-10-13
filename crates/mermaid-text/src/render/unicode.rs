@@ -1153,6 +1153,39 @@ fn render_inner(
                 EdgeEndpoint::Arrow => unreachable!(),
             };
             grid.set(tip_c, tip_r, glyph);
+            // A note's route can turn at its final cell. Preserve the incoming
+            // segment and connect toward the actual target border, rather than
+            // flattening that corner to the graph's nominal flow direction.
+            if edge.end == EdgeEndpoint::None
+                && (graph
+                    .node(&edge.from)
+                    .is_some_and(|n| n.shape == NodeShape::Note)
+                    || graph
+                        .node(&edge.to)
+                        .is_some_and(|n| n.shape == NodeShape::Note))
+                && let Some(((col, row), geom)) = endpoint_geom(
+                    &edge.to,
+                    positions,
+                    &geoms,
+                    sg_bounds,
+                    &externally_attached_markers,
+                )
+            {
+                let toward_border = if tip_c < col {
+                    DIR_RIGHT
+                } else if tip_c >= col + geom.width {
+                    DIR_LEFT
+                } else if tip_r < row {
+                    DIR_DOWN
+                } else {
+                    DIR_UP
+                };
+                grid.replace_dirs(
+                    tip_c,
+                    tip_r,
+                    routed_direction_bits_at(&paths, tip_c, tip_r) | toward_border,
+                );
+            }
             // Protect circle/cross glyphs; leave plain-line cells unprotected
             // so subsequent edges can produce correct junctions.
             if edge.end != EdgeEndpoint::None {

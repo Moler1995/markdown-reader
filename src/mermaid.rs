@@ -4,7 +4,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use image::{DynamicImage, RgbaImage};
-use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
+use ratatui_image::{
+    picker::{Picker, ProtocolType},
+    protocol::StatefulProtocol,
+};
 use resvg::usvg;
 
 use crate::config::{MermaidMode, MermaidTextBackend};
@@ -572,8 +575,36 @@ pub fn create_picker() -> Option<Picker> {
     // protocol support. Fall back to halfblocks if the query fails or the
     // terminal doesn't respond in time.
     match Picker::from_query_stdio() {
-        Ok(picker) => Some(picker),
+        Ok(mut picker) => {
+            prefer_wezterm_protocol(&mut picker, is_wezterm());
+            Some(picker)
+        }
         Err(_) => Some(Picker::halfblocks()),
+    }
+}
+
+/// Whether the process is running under WezTerm according to its public env
+/// markers. `TERM_PROGRAM` is set by WezTerm on some platforms where the
+/// `WEZTERM_EXECUTABLE` marker is not propagated (notably through WSL).
+fn is_wezterm() -> bool {
+    is_wezterm_marked(
+        std::env::var("WEZTERM_EXECUTABLE").ok().as_deref(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+    )
+}
+
+fn is_wezterm_marked(executable: Option<&str>, term_program: Option<&str>) -> bool {
+    executable.is_some_and(|value| !value.is_empty())
+        || term_program.is_some_and(|value| value.eq_ignore_ascii_case("wezterm"))
+}
+
+/// Prefer WezTerm's documented working iTerm2 protocol over Kitty/Sixel. The
+/// library's environment hint blacklists Kitty and Sixel only when
+/// `WEZTERM_EXECUTABLE` is set; when only `TERM_PROGRAM` identifies WezTerm,
+/// a successful Kitty probe otherwise wins over its iTerm2 environment fallback.
+fn prefer_wezterm_protocol(picker: &mut Picker, wezterm: bool) {
+    if wezterm {
+        picker.set_protocol_type(ProtocolType::Iterm2);
     }
 }
 
@@ -726,6 +757,33 @@ fn has_limited_rendering(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ratatui-image's compatibility matrix lists iTerm2 as WezTerm's working
+    /// primary protocol; its GUI QA remains unverified. This models a
+    /// successful Kitty probe with only TERM_PROGRAM available (the WSL case).
+    #[test]
+    fn wezterm_uses_iterm2_even_when_kitty_probe_succeeds() {
+        assert!(is_wezterm_marked(None, Some("WezTerm")));
+        assert!(is_wezterm_marked(Some("/wezterm"), None));
+        assert!(!is_wezterm_marked(None, Some("my-wezterm-wrapper")));
+
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Kitty);
+
+        prefer_wezterm_protocol(&mut picker, true);
+
+        assert_eq!(picker.protocol_type(), ProtocolType::Iterm2);
+    }
+
+    #[test]
+    fn non_wezterm_picker_protocol_is_preserved() {
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Kitty);
+
+        prefer_wezterm_protocol(&mut picker, false);
+
+        assert_eq!(picker.protocol_type(), ProtocolType::Kitty);
+    }
 
     const SEQUENCE_DIAGRAM: &str = r"sequenceDiagram
     participant W as Worker

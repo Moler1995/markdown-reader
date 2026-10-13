@@ -9,14 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Bundled mermaid-text classDiagram parsing no longer panics on non-ASCII
-  class names or rejected member shorthand (#50). Original fix and
-  regression tests by @worldnine in #51; maintainer review adds exact
-  diagnostic and parsed relationship assertions. The same review also fixes
-  Unicode whitespace panics in class methods and ER relationships, plus a
-  malformed-parenthesis class-method panic.
-- Update the Rustls lockfile to 0.23.45 (and rustls-webpki to 0.103.15)
-  to resolve RUSTSEC-2026-0285 found by the local advisory gate.
+- Mermaid CJK/fullwidth labels keep their terminal-cell width and aligned
+  borders across grid, sequence, class/ER tables and quadrant charts (#52).
+  Combining marks stay attached to their labels. Reported by @worldnine.
+- State-note links preserve their final route corner. Nested sequence
+  activation bars use distinct lanes with clear labels, including autonumber
+  prefixes. Sequence notes keep their text/borders and intentionally cover
+  underlying lanes; exposed lane spans remain continuous (#41).
+- Non-ASCII class names and Unicode whitespace in class methods/ER
+  relationships no longer panic; malformed class-method parentheses return
+  a parse error (#50). Original keyword fix and regressions by @worldnine
+  in #51; maintainer review also pins exact AST and diagnostic assertions.
+- Update Rustls to 0.23.45 and rustls-webpki to 0.103.15 in the lockfile,
+  resolving RUSTSEC-2026-0285 found by the local advisory gate.
+
+### Changed
+
+- Recognized WezTerm sessions prefer the iTerm2 image protocol after a
+  successful terminal query, including `TERM_PROGRAM` detection in WSL.
+  Unicode math fallback renders `\tag{1}` as `(1)` (#48). The equation raster
+  and protocol routing are tested; the reported WezTerm/WSL display still
+  requires verification in that terminal. No release has been published.
 
 ## [1.35.1] — 2026-08-31
 

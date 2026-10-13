@@ -18,7 +18,9 @@
 use unicode_width::UnicodeWidthStr;
 
 use crate::er::{AttributeKey, Cardinality, ErDiagram, Relationship};
-use crate::render::box_table::{NAME_PAD, grid_to_string, pad_right, put, put_str};
+use crate::render::box_table::{
+    NAME_PAD, grid_to_string_with_marks, pad_right, put_cell as put, put_str_with_marks,
+};
 
 /// Default terminal width budget. Diagrams narrower than this use a single row.
 const DEFAULT_MAX_WIDTH: usize = 80;
@@ -130,12 +132,20 @@ pub fn render(chart: &ErDiagram, max_width: Option<usize>) -> String {
     };
 
     let mut grid: Vec<Vec<char>> = vec![vec![' '; canvas_width.max(1)]; canvas_height.max(1)];
+    let mut combining_marks = std::collections::HashMap::new();
 
     // Pass 1: draw entity boxes.
     for (i, entity) in chart.entities.iter().enumerate() {
         let left = entity_left[i];
         let right = left + entity_widths[i] - 1;
-        draw_entity_box(&mut grid, entity_top[i], left, right, entity);
+        draw_entity_box(
+            &mut grid,
+            &mut combining_marks,
+            entity_top[i],
+            left,
+            right,
+            entity,
+        );
     }
 
     // Tracks which (col_start, col_end) ranges have been claimed by a
@@ -170,6 +180,7 @@ pub fn render(chart: &ErDiagram, max_width: Option<usize>) -> String {
                 entity_widths[to_idx],
                 rel,
                 top_pad,
+                &mut combining_marks,
             );
         } else {
             // Cross-row — route via a vertical spine on the right edge of
@@ -193,11 +204,12 @@ pub fn render(chart: &ErDiagram, max_width: Option<usize>) -> String {
                 from_is_rightmost,
                 to_is_rightmost,
                 &mut used_label_ranges,
+                &mut combining_marks,
             );
         }
     }
 
-    grid_to_string(&grid)
+    grid_to_string_with_marks(&grid, &combining_marks)
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +466,7 @@ fn format_keys(keys: &[AttributeKey]) -> String {
 /// Draw the full entity box at canvas position `(entity_top, left..=right)`.
 fn draw_entity_box(
     grid: &mut [Vec<char>],
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
     entity_top: usize,
     left: usize,
     right: usize,
@@ -470,7 +483,7 @@ fn draw_entity_box(
     put(grid, entity_top, right, '┐');
 
     put(grid, entity_top + 1, left, '│');
-    put_str(grid, entity_top + 1, name_start, &entity.name);
+    put_str_with_marks(grid, marks, entity_top + 1, name_start, &entity.name);
     put(grid, entity_top + 1, right, '│');
 
     if entity.attributes.is_empty() {
@@ -493,12 +506,18 @@ fn draw_entity_box(
         let row = entity_top + HEADER_ROWS + i;
         put(grid, row, left, '│');
         let mut col = left + 1 + NAME_PAD;
-        put_str(grid, row, col, &pad_right(&attr.type_name, cols.type_w));
+        put_str_with_marks(
+            grid,
+            marks,
+            row,
+            col,
+            &pad_right(&attr.type_name, cols.type_w),
+        );
         col += cols.type_w + 1;
-        put_str(grid, row, col, &pad_right(&attr.name, cols.name_w));
+        put_str_with_marks(grid, marks, row, col, &pad_right(&attr.name, cols.name_w));
         col += cols.name_w + 1;
         let keys_str = format_keys(&attr.keys);
-        put_str(grid, row, col, &pad_right(&keys_str, cols.keys_w));
+        put_str_with_marks(grid, marks, row, col, &pad_right(&keys_str, cols.keys_w));
         put(grid, row, right, '│');
     }
 
@@ -530,6 +549,7 @@ fn draw_relationship_line(
     to_width: usize,
     rel: &Relationship,
     top_pad: usize,
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
 ) {
     let line_row = entity_top + 1;
 
@@ -595,9 +615,9 @@ fn draw_relationship_line(
         };
         if gap_w >= label_w {
             let offset = (gap_w - label_w) / 2;
-            put_str(grid, label_row, line_lo + offset, label);
+            put_str_with_marks(grid, marks, label_row, line_lo + offset, label);
         } else {
-            put_str(grid, label_row, line_lo, label);
+            put_str_with_marks(grid, marks, label_row, line_lo, label);
         }
     }
 }
@@ -644,6 +664,7 @@ fn draw_cross_row_relationship(
     from_is_rightmost: bool,
     to_is_rightmost: bool,
     used_label_ranges: &mut std::collections::HashMap<usize, Vec<(usize, usize)>>,
+    marks: &mut std::collections::HashMap<(usize, usize), String>,
 ) {
     // The spine is the last column of the canvas. The canvas is sized with a
     // 2-column margin (1 gap + 1 spine) beyond the rightmost entity box, so
@@ -789,7 +810,7 @@ fn draw_cross_row_relationship(
             .entry(chosen_row)
             .or_default()
             .push((label_col, label_end));
-        put_str(grid, chosen_row, label_col, label);
+        put_str_with_marks(grid, marks, chosen_row, label_col, label);
     }
 }
 

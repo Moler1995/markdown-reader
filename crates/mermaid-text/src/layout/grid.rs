@@ -13,7 +13,7 @@
 //! implementation.
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 use unicode_width::UnicodeWidthChar;
 
@@ -285,6 +285,10 @@ pub struct Grid {
     /// cells so that rounded corners, arrow tips, and node labels survive
     /// any subsequent edge routing that happens to cross them.
     protected: Vec<Vec<bool>>,
+    /// Cells consumed by the second terminal column of a wide glyph.
+    wide_continuation: Vec<Vec<bool>>,
+    /// Zero-width combining marks attached to the preceding visible cell.
+    combining_marks: HashMap<(usize, usize), String>,
     /// Optional foreground color per cell. Empty (all `None`) until the
     /// caller paints colors via [`Grid::set_fg`] / [`Grid::paint_fg_rect`].
     /// Consumed only by [`Grid::render_with_colors`].
@@ -321,6 +325,8 @@ impl Grid {
             obstacles: vec![vec![Obstacle::Free; width]; height],
             directions: vec![vec![0u8; width]; height],
             protected: vec![vec![false; width]; height],
+            wide_continuation: vec![vec![false; width]; height],
+            combining_marks: HashMap::new(),
             fg: vec![vec![None; width]; height],
             bg: vec![vec![None; width]; height],
             hyperlink: vec![vec![None; width]; height],
@@ -347,7 +353,7 @@ impl Grid {
     /// their glyph is preserved and the direction bits are not recorded.
     /// Out-of-bounds writes are silently ignored.
     pub(crate) fn add_dirs(&mut self, col: usize, row: usize, bits: u8) {
-        if row >= self.height || col >= self.width {
+        if row >= self.height || col >= self.width || self.wide_continuation[row][col] {
             return;
         }
         // Protected cells with NO direction bits are label text, arrow tips,
@@ -360,7 +366,7 @@ impl Grid {
             return;
         }
         self.directions[row][col] |= bits;
-        self.cells[row][col] = DIR_TO_CHAR[self.directions[row][col] as usize];
+        self.set(col, row, DIR_TO_CHAR[self.directions[row][col] as usize]);
     }
 
     /// Replace a route cell's direction mask with the exact set derived from
@@ -374,7 +380,7 @@ impl Grid {
             return;
         }
         self.directions[row][col] = bits;
-        self.cells[row][col] = DIR_TO_CHAR[bits as usize];
+        self.set(col, row, DIR_TO_CHAR[bits as usize]);
     }
 
     /// Record direction bits at `(col, row)` *without* writing the glyph or
@@ -498,9 +504,9 @@ impl Grid {
     /// was previously holding a different glyph (e.g. an arrow tip that should
     /// now be a path character because the edge has no endpoint marker).
     pub fn recompute_cell_glyph(&mut self, col: usize, row: usize) {
-        if row < self.height && col < self.width {
+        if row < self.height && col < self.width && !self.wide_continuation[row][col] {
             let bits = self.directions[row][col];
-            self.cells[row][col] = DIR_TO_CHAR[bits as usize];
+            self.set(col, row, DIR_TO_CHAR[bits as usize]);
         }
     }
 
@@ -508,8 +514,29 @@ impl Grid {
     ///
     /// Out-of-bounds writes are silently ignored.
     pub fn set(&mut self, col: usize, row: usize, ch: char) {
-        if row < self.height && col < self.width {
-            self.cells[row][col] = ch;
+        if row >= self.height || col >= self.width || self.wide_continuation[row][col] {
+            return;
+        }
+        let wide = UnicodeWidthChar::width(ch) == Some(2);
+        if wide && col + 1 >= self.width {
+            return;
+        }
+        self.release_glyph(col, row);
+        if wide {
+            self.release_glyph(col + 1, row);
+            self.cells[row][col + 1] = ' ';
+            self.wide_continuation[row][col + 1] = true;
+            self.protect(col + 1, row);
+        }
+        self.cells[row][col] = ch;
+    }
+
+    /// Release a base glyph's suffix and owned continuation before replacement.
+    fn release_glyph(&mut self, col: usize, row: usize) {
+        self.combining_marks.remove(&(col, row));
+        if col + 1 < self.width && self.wide_continuation[row][col + 1] {
+            self.wide_continuation[row][col + 1] = false;
+            self.protected[row][col + 1] = false;
         }
     }
 
@@ -522,7 +549,7 @@ impl Grid {
     /// stomp (corners, recomputed glyphs, etc.).
     pub fn set_unless_protected(&mut self, col: usize, row: usize, ch: char) {
         if row < self.height && col < self.width && !self.protected[row][col] {
-            self.cells[row][col] = ch;
+            self.set(col, row, ch);
         }
     }
 
@@ -731,6 +758,9 @@ impl Grid {
             let mut current_hl: Option<u32> = None;
 
             for col in 0..self.width {
+                if self.wide_continuation[row][col] {
+                    continue;
+                }
                 // --- OSC 8 hyperlink transition ---
                 // Emit the close/open sequence whenever the hyperlink changes.
                 // We compare `Option<u32>` indices rather than raw URL strings
@@ -775,6 +805,9 @@ impl Grid {
                 }
 
                 row_buf.push(self.cells[row][col]);
+                if let Some(marks) = self.combining_marks.get(&(col, row)) {
+                    row_buf.push_str(marks);
+                }
             }
 
             // Close any open hyperlink before trimming and the row-end reset.
@@ -1175,31 +1208,43 @@ impl Grid {
     /// Each character advances the column by its display width (via
     /// `unicode-width`), so multi-byte characters are handled correctly.
     pub fn write_text(&mut self, col: usize, row: usize, text: &str) {
-        let mut x = col;
-        for ch in text.chars() {
-            if x >= self.width {
-                break;
-            }
-            self.set(x, row, ch);
-            // Advance by Unicode display width (most chars = 1, CJK = 2)
-            x += UnicodeWidthChar::width(ch).unwrap_or(1);
-        }
+        self.write_text_inner(col, row, text, false);
     }
 
-    /// Write `text` starting at `(col, row)` and protect every cell written
-    /// so that subsequent direction-bit canvas writes (from edge routing) cannot
-    /// overwrite the label characters.
-    ///
-    /// Use this for edge labels that must survive later routing passes.
+    /// Write text and protect its occupied cells against subsequent routing.
     pub fn write_text_protected(&mut self, col: usize, row: usize, text: &str) {
+        self.write_text_inner(col, row, text, true);
+    }
+
+    fn write_text_inner(&mut self, col: usize, row: usize, text: &str, protected: bool) {
+        if row >= self.height {
+            return;
+        }
         let mut x = col;
+        let mut last_glyph = None;
         for ch in text.chars() {
-            if x >= self.width {
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+            if char_width == 0 {
+                if let Some(glyph_col) = last_glyph {
+                    self.combining_marks
+                        .entry((glyph_col, row))
+                        .or_default()
+                        .push(ch);
+                }
+                continue;
+            }
+            if x >= self.width || char_width > self.width - x {
                 break;
             }
-            self.set(x, row, ch);
-            self.protect(x, row);
-            x += UnicodeWidthChar::width(ch).unwrap_or(1);
+            last_glyph = None;
+            if !self.wide_continuation[row][x] {
+                self.set(x, row, ch);
+                last_glyph = Some(x);
+                if protected {
+                    self.protect(x, row);
+                }
+            }
+            x += char_width;
         }
     }
 
@@ -1601,6 +1646,9 @@ impl Grid {
             if r >= self.height || c >= self.width {
                 continue;
             }
+            if self.wide_continuation[r][c] {
+                continue;
+            }
             if self.protected[r][c] {
                 continue;
             }
@@ -1611,14 +1659,15 @@ impl Grid {
                     // Only single-axis cells (pure horizontal or pure vertical)
                     // get dotted glyphs; junctions stay solid to avoid
                     // mismatched box-drawing characters.
-                    self.cells[r][c] = match bits {
+                    let glyph = match bits {
                         0b0001..=0b0011 => dotted::V,          // any vertical-only
                         0b0100 | 0b1000 | 0b1100 => dotted::H, // any horizontal-only
                         _ => DIR_TO_CHAR[bits as usize],       // junction → stay solid
                     };
+                    self.set(c, r, glyph);
                 }
                 EdgeLineStyle::Thick => {
-                    self.cells[r][c] = THICK_DIR_TO_CHAR[bits as usize];
+                    self.set(c, r, THICK_DIR_TO_CHAR[bits as usize]);
                 }
             }
         }
@@ -1747,12 +1796,15 @@ impl Grid {
             if c >= self.width || r >= self.height {
                 continue;
             }
+            if self.wide_continuation[r][c] {
+                continue;
+            }
             if i == last {
                 self.protected[r][c] = false;
                 if self.directions[r][c] == 0 {
-                    self.cells[r][c] = ' ';
+                    self.set(c, r, ' ');
                 } else {
-                    self.cells[r][c] = DIR_TO_CHAR[self.directions[r][c] as usize];
+                    self.set(c, r, DIR_TO_CHAR[self.directions[r][c] as usize]);
                 }
                 continue;
             }
@@ -1772,7 +1824,7 @@ impl Grid {
                 // is fine; rewriting `cells[]` would overwrite e.g. an
                 // arrow tip that happens to sit on this path's middle.
                 if !self.protected[r][c] {
-                    self.cells[r][c] = DIR_TO_CHAR[self.directions[r][c] as usize];
+                    self.set(c, r, DIR_TO_CHAR[self.directions[r][c] as usize]);
                 }
             }
         }
@@ -1808,8 +1860,17 @@ impl std::fmt::Display for Grid {
     /// Format the grid as a multi-line string, stripping trailing spaces.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = String::with_capacity(self.height * (self.width + 1));
-        for row in &self.cells {
-            let line: String = row.iter().collect();
+        for (row_idx, row) in self.cells.iter().enumerate() {
+            let mut line = String::new();
+            for (col, &ch) in row.iter().enumerate() {
+                if self.wide_continuation[row_idx][col] {
+                    continue;
+                }
+                line.push(ch);
+                if let Some(marks) = self.combining_marks.get(&(col, row_idx)) {
+                    line.push_str(marks);
+                }
+            }
             out.push_str(line.trim_end());
             out.push('\n');
         }
@@ -1867,6 +1928,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn route_writers_release_replaced_wide_glyphs() {
+        for writer in 0..3 {
+            let mut grid = Grid::new(3, 1);
+            grid.write_text(0, 0, "界A");
+            assert_eq!(grid.to_string(), "界A\n");
+            match writer {
+                0 => grid.add_dirs(0, 0, DIR_LEFT | DIR_RIGHT),
+                1 => grid.replace_dirs(0, 0, DIR_LEFT | DIR_RIGHT),
+                _ => {
+                    grid.seed_border_dirs(0, 0, DIR_RIGHT);
+                    grid.erase_path(&[(0, 0), (1, 0)]);
+                }
+            }
+            grid.set(1, 0, 'X');
+            assert_eq!(
+                grid.to_string(),
+                if writer == 2 { " XA\n" } else { "─XA\n" }
+            );
+        }
+    }
+
+    #[test]
     fn grid_set_and_get() {
         let mut g = Grid::new(5, 5);
         g.set(2, 3, 'X');
@@ -1878,7 +1961,35 @@ mod tests {
     fn out_of_bounds_ignored() {
         let mut g = Grid::new(3, 3);
         g.set(10, 10, 'X'); // should not panic
+        g.write_text(0, 10, "wide 界");
+        g.write_text_protected(0, 10, "wide 界");
         assert_eq!(g.get(10, 10), ' ');
+    }
+
+    #[test]
+    fn wide_continuation_is_hidden_and_released_when_its_base_is_replaced() {
+        let mut g = Grid::new(4, 1);
+        g.write_text(0, 0, "界");
+        g.set(1, 0, 'x');
+        assert_eq!(g.to_string(), "界\n");
+
+        g.set(0, 0, 'A');
+        g.set(1, 0, 'B');
+        assert_eq!(g.to_string(), "AB\n");
+    }
+
+    #[test]
+    fn combining_mark_after_wide_glyph_stays_with_its_base() {
+        let mut g = Grid::new(4, 1);
+        g.write_text(0, 0, "界\u{301}X");
+        assert_eq!(g.to_string(), "界\u{301}X\n");
+    }
+
+    #[test]
+    fn wide_glyph_is_clipped_when_only_one_column_remains() {
+        let mut g = Grid::new(1, 1);
+        g.write_text(0, 0, "界");
+        assert_eq!(g.to_string(), "");
     }
 
     #[test]

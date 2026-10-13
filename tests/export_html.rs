@@ -6,18 +6,9 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Resolve the path to the compiled debug binary.
+/// Use Cargo's compiled binary path, including custom target directories.
 fn binary() -> std::path::PathBuf {
-    // `CARGO_BIN_EXE_markdown-reader` is set by Cargo when running integration
-    // tests for binaries in the same workspace package. Fall back to a relative
-    // path so the test still works if run manually.
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_markdown-reader") {
-        return p.into();
-    }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("debug")
-        .join("markdown-reader")
+    env!("CARGO_BIN_EXE_markdown-reader").into()
 }
 
 /// Happy-path: exporting the project's own `sample.md` produces a non-empty
