@@ -3,6 +3,26 @@
 All notable changes to `mermaid-text` are documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 0.57.3 — 2026-10-07 — classDiagram UTF-8 keyword probe (#50)
+
+### Fixed
+
+- **Panic on non-ASCII `classDiagram` lines.** The class parser kept a
+  fourth local copy of the keyword-strip helper (`strip_keyword_prefix_ci`)
+  that the 0.56.1 audit (#29) missed. It still sliced at a byte index
+  (`line[..kw.len()]`), so a line such as `動物 <|-- 犬` or
+  `Животное <|-- Собака` panicked when a probed keyword length (`class`,
+  `direction`, `note`, `link`, `click`, `namespace`) landed inside a
+  multi-byte char. The copy is removed and the parser now uses the canonical
+  `parser::common::strip_keyword_prefix`. Pinned by two regression tests in
+  `tests/utf8_multibyte.rs`. Original fix and reproductions by @worldnine
+  in #51; maintainer review also pins parsed relationship structure and the
+  exact unsupported-shorthand diagnostic.
+- Class methods and ER relationships accept multi-byte Unicode whitespace
+  without slicing inside a character. Malformed class-method parentheses return
+  a descriptive parse error instead of constructing a reversed slice. These
+  pre-existing variants were discovered and reproduced during the #51 review.
+
 ## 0.57.2 — 2026-08-31 — Delimiter-aware flowchart labels (#40)
 
 ### Fixed

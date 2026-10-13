@@ -54,7 +54,9 @@ use crate::Error;
 use crate::class::{
     Attribute, ClassDiagram, Member, Method, RelKind, Relation, Stereotype, Visibility,
 };
-use crate::parser::common::strip_inline_comment;
+use crate::parser::common::{
+    strip_inline_comment, strip_keyword_prefix as strip_keyword_prefix_ci,
+};
 
 /// Parse a `classDiagram` source string into a [`ClassDiagram`].
 ///
@@ -331,9 +333,16 @@ fn parse_method(
 ) -> Result<Member, Error> {
     let before_paren = rest[..paren_pos].trim();
 
+    if before_paren.contains(')') {
+        return Err(Error::ParseError(format!(
+            "method closing `)` precedes opening `(`: {rest:?}"
+        )));
+    }
+
     // Find the matching `)`.
-    let close = rest
+    let close = rest[paren_pos + 1..]
         .find(')')
+        .map(|relative| paren_pos + 1 + relative)
         .ok_or_else(|| Error::ParseError(format!("method missing closing `)`: {rest:?}")))?;
 
     let params = rest[paren_pos + 1..close].trim().to_string();
@@ -357,7 +366,7 @@ fn parse_method(
     let (name, return_type_before) =
         if let Some(last_space) = before_paren.rfind(char::is_whitespace) {
             let prefix = before_paren[..last_space].trim();
-            let name_part = before_paren[last_space + 1..].trim();
+            let name_part = before_paren[last_space..].trim();
             let (name_clean, _, _) = strip_suffixes(name_part);
             let prefix_type = if prefix.is_empty() {
                 None
@@ -608,24 +617,6 @@ fn strip_inline_multiplicity(tok: &str) -> (Option<String>, &str, Option<String>
         None
     };
     (from_mult, s.trim(), to_mult)
-}
-
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
-/// Strip a case-insensitive keyword prefix followed by whitespace. Returns the
-/// trimmed remainder on match, `None` otherwise.
-fn strip_keyword_prefix_ci<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
-    let len = kw.len();
-    if line.len() > len
-        && line[..len].eq_ignore_ascii_case(kw)
-        && line.as_bytes()[len].is_ascii_whitespace()
-    {
-        Some(line[len..].trim())
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -186,3 +186,64 @@ fn journey_non_ascii_does_not_panic() {
     assert!(r.is_ok(), "journey render panicked on non-ASCII:\n{src}");
     assert!(r.unwrap().is_ok(), "journey render errored:\n{src}");
 }
+
+/// The class parser kept its own `strip_keyword_prefix_ci` copy that still
+/// sliced at `kw.len()` (a byte index), so a line whose byte at a probed
+/// keyword length (`class`, `direction`, `note`, `link`, `click`,
+/// `namespace`) landed mid-char panicked — e.g. `動物 <|-- 犬` at byte 4
+/// while probing `note`. Each source below hit that panic before the fix.
+#[test]
+fn class_non_ascii_does_not_panic() {
+    for (src, labels) in [
+        ("classDiagram\n    動物 <|-- 犬\n", &["動物", "犬"][..]),
+        (
+            "classDiagram\n    Животное <|-- Собака\n",
+            &["Животное", "Собака"][..],
+        ),
+    ] {
+        let r = std::panic::catch_unwind(|| mermaid_text::render(src));
+        assert!(r.is_ok(), "class render panicked on non-ASCII:\n{src}");
+        let out = r
+            .unwrap()
+            .unwrap_or_else(|e| panic!("class render errored: {e}\n{src}"));
+        for label in labels {
+            assert!(out.contains(label), "label {label:?} must survive:\n{out}");
+        }
+        let diagram = mermaid_text::parser::class::parse(src).unwrap();
+        let names: Vec<_> = diagram
+            .classes
+            .iter()
+            .map(|class| class.name.as_str())
+            .collect();
+        assert_eq!(names, labels, "both classes must be parsed in order");
+        assert_eq!(diagram.relations.len(), 1);
+        assert_eq!(diagram.relations[0].from, labels[0]);
+        assert_eq!(diagram.relations[0].to, labels[1]);
+        assert_eq!(
+            diagram.relations[0].kind,
+            mermaid_text::class::RelKind::Inheritance
+        );
+    }
+}
+
+/// The colon-shorthand member form is unsupported and must be rejected with
+/// the same `Err` as its ASCII spelling — not reach the byte-slicing panic.
+#[test]
+fn class_non_ascii_colon_shorthand_errors_instead_of_panicking() {
+    for src in [
+        "classDiagram\n    犬 : +吠える()\n",
+        "classDiagram\n    動物 : 名前\n",
+        "classDiagram\n    Dog : +bark()\n",
+    ] {
+        let r = std::panic::catch_unwind(|| mermaid_text::render(src));
+        assert!(r.is_ok(), "class render panicked on non-ASCII:\n{src}");
+        let error = r.unwrap().expect_err("colon shorthand must be rejected");
+        match error {
+            mermaid_text::Error::ParseError(message) => assert_eq!(
+                message, "classDiagram: colon-shorthand member form not yet supported",
+                "the intended diagnostic must survive for {src:?}"
+            ),
+            error => panic!("unexpected rejection for {src:?}: {error:?}"),
+        }
+    }
+}
